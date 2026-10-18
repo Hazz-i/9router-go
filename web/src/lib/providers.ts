@@ -1,4 +1,6 @@
 // Auto-generated provider catalog matching upstream 9router
+import type { LiveCaptionCapability } from '../api/client'
+
 export interface ProviderCatalogItem {
   id: string
   name: string
@@ -11,6 +13,7 @@ export interface ProviderCatalogItem {
   mediaPriority?: number
   hiddenKinds?: string[]
   serviceKinds?: string[]
+  liveCaptionConfig?: LiveCaptionCapability
   /** auth modes from upstream registry (e.g. clinepass ["apikey","oauth"] = dual buttons). */
   authModes?: string[]
   /** hidden from provider list (upstream parity) but detail page stays reachable. */
@@ -1152,8 +1155,10 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "noAuth": false,
     "priority": 20,
     "serviceKinds": [
-      "stt"
-    ]
+      "stt",
+      "liveCaption"
+    ],
+    "liveCaptionConfig": { "defaultModel": "nova-3", "wsUrl": "wss://api.deepgram.com/v1/listen", "authType": "apikey", "authHeader": "token", "format": "deepgram" },
   },
   {
     "id": "deepseek",
@@ -1196,8 +1201,10 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "authType": "apikey",
     "noAuth": false,
     "serviceKinds": [
-      "tts"
-    ]
+      "tts",
+      "liveCaption"
+    ],
+    "liveCaptionConfig": { "defaultModel": "scribe_v2_realtime", "wsUrl": "wss://api.elevenlabs.io/v1/speech-to-text/realtime", "authType": "apikey", "authHeader": "xi-api-key", "format": "elevenlabs-scribe" }
   },
   {
     "id": "exa",
@@ -2280,8 +2287,10 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "noAuth": false,
     "priority": 50,
     "serviceKinds": [
-      "stt"
-    ]
+      "stt",
+      "liveCaption"
+    ],
+    "liveCaptionConfig": { "baseUrl": "http://localhost:8080/v1/audio/transcriptions", "authType": "apikey", "authHeader": "bearer", "format": "openai" }
   },
   {
     "id": "selfhosted-embedding",
@@ -2310,6 +2319,7 @@ export function getProvidersByKind(kind: string): ProviderCatalogItem[] {
     .filter((p) => {
       const kinds = p.serviceKinds ?? ['llm']
       if (!kinds.includes(kind)) return false
+      if (kind === 'liveCaption' && !p.liveCaptionConfig) return false
       if (p.hidden) return false
       if (p.hiddenKinds?.includes(kind)) return false
       return true
@@ -2322,6 +2332,7 @@ export const MEDIA_PROVIDER_KINDS = [
   'image',
   'tts',
   'stt',
+  'liveCaption',
   'video',
   'webSearch',
   'webFetch',

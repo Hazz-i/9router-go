@@ -28,6 +28,61 @@ export interface ProviderConnection {
   providerSpecificData?: { assignedModel?: string | null; [key: string]: unknown }
 }
 
+export interface LiveCaptionCapability {
+  defaultModel?: string
+  wsUrl?: string
+  baseUrl?: string
+  authType?: string
+  authHeader?: string
+  format: 'deepgram' | 'elevenlabs-scribe' | 'openai'
+}
+
+export interface LiveCaptionSocketParams {
+  model: string
+  language?: string
+  encoding?: string
+  sample_rate?: number
+  apiKey?: string
+}
+
+export interface LiveCaptionWordFrame {
+  type: 'word'
+  word: string
+  start: number
+  end: number
+  confidence?: number
+  isFinal?: boolean
+}
+
+export interface LiveCaptionChunk {
+  text: string
+  start: number
+  end: number
+  words?: LiveCaptionWordFrame[]
+}
+
+export type LiveCaptionFrame =
+  | { type: 'connected'; provider: string; model: string; language: string; sampleRate: number; encoding: string }
+  | { type: 'ready'; upstream: string }
+  | { type: 'partial'; text: string; isFinal?: false }
+  | LiveCaptionWordFrame
+  | { type: 'chunk'; chunk: LiveCaptionChunk }
+  | { type: 'error'; error: string; code?: number }
+  | { type: 'upstream_closed'; code: number; reason: string }
+  | { type: 'subtitles'; format: string; srt: string; ass: string; chunks: LiveCaptionChunk[] }
+
+/** Build the browser socket URL without opening a second HTTP request path. */
+export function buildLiveCaptionSocketUrl(endpoint: string, params: LiveCaptionSocketParams): string {
+  const url = new URL('/v1/audio/live-transcriptions', endpoint)
+  url.protocol = url.protocol === 'https:' || url.protocol === 'wss:' ? 'wss:' : 'ws:'
+  url.searchParams.set('model', params.model)
+  url.searchParams.set('language', params.language ?? 'id')
+  url.searchParams.set('encoding', params.encoding ?? 'linear16')
+  url.searchParams.set('sample_rate', String(params.sample_rate ?? 16000))
+  if (params.apiKey) url.searchParams.set('apiKey', params.apiKey)
+  return url.toString()
+}
+
 export interface Combo {
   id: string
   name: string

@@ -146,6 +146,11 @@
       description: 'Manage your Speech To Text providers',
       icon: 'mic',
     },
+    'media-live-caption': {
+      title: 'Live Caption',
+      description: 'Manage real-time microphone transcription providers',
+      icon: 'closed_caption',
+    },
     'media-video': {
       title: 'Video',
       description: 'Manage your Video providers',

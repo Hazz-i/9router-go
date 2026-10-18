@@ -244,6 +244,7 @@
     'media-image': { title: 'Text to Image', description: 'Image generation and transformation models' },
     'media-tts': { title: 'Text to Speech', description: 'Voice synthesis and audio generation models' },
     'media-stt': { title: 'Speech to Text', description: 'Audio transcription and speech recognition models' },
+    'media-live-caption': { title: 'Live Caption', description: 'Real-time microphone transcription providers' },
     'media-systemone': { title: 'System One', description: 'Structured state evaluation models' },
     'media-web': { title: 'Web Fetch & Search', description: 'Configure web search and scrape tools' },
     'proxy-pools': { title: 'Proxy Pools', description: 'Manage your proxy pool configurations' },
@@ -464,6 +465,31 @@
               {:else}
                 <MediaKindView
                   kind="stt"
+                  {connections}
+                  {apiKeys}
+                  {settings}
+                  {combos}
+                  onRefresh={loadData}
+                  onSelectProvider={(k, id) => navigateMediaProvider(k, id)}
+                />
+              {/if}
+            {:else if activeTab === 'media-live-caption'}
+              {#if selectedMedia && selectedMediaCatalogItem}
+                <MediaProviderDetail
+                  provider={selectedMediaCatalogItem}
+                  kind="liveCaption"
+                  {connections}
+                  {apiKeys}
+                  {settings}
+                  onBack={() => {
+                    selectedMedia = null
+                    navigate('media-live-caption')
+                  }}
+                  onRefresh={loadData}
+                />
+              {:else}
+                <MediaKindView
+                  kind="liveCaption"
                   {connections}
                   {apiKeys}
                   {settings}

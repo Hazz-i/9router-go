@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -40,6 +42,19 @@ func (w *statusWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack forwards to the underlying writer when it implements http.Hijacker.
+// A WebSocket upgrade (realtime voice, live caption) must reach the raw TCP
+// socket through every middleware layer: the type assertion w.(http.Hijacker)
+// fails on this wrapper exactly like Flush did, and gorilla answers the
+// handshake with a 500 instead of upgrading.
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return h.Hijack()
 }
 
 // isQuietPath reports whether path is a routine UI asset or dashboard polling endpoint

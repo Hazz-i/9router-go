@@ -12,6 +12,7 @@
   import NoAuthProxyCard from './NoAuthProxyCard.svelte'
   import TtsExampleCard from './TtsExampleCard.svelte'
   import SttExampleCard from './SttExampleCard.svelte'
+  import LiveCaptionExampleCard from './LiveCaptionExampleCard.svelte'
 
   interface Props {
     provider: ProviderCatalogItem
@@ -38,6 +39,7 @@
     embedding: 'Embedding',
     tts: 'Text To Speech',
     stt: 'Speech To Text',
+    liveCaption: 'Live Caption',
     image: 'Text to Image',
     systemone: 'System One',
     webSearch: 'Web Search',
@@ -49,6 +51,7 @@
     embedding: '/dashboard/media-providers/embedding',
     tts: '/dashboard/media-providers/tts',
     stt: '/dashboard/media-providers/stt',
+    liveCaption: '/dashboard/media-providers/liveCaption',
     image: '/dashboard/media-providers/image',
     systemone: '/dashboard/media-providers/systemone',
     webSearch: '/dashboard/media-providers/web',
@@ -217,7 +220,8 @@
   let customKindModels = $state<Array<{ id: string; name?: string }>>([])
   let rawModels = $derived(getModelsByProviderId(provider.id))
   let mediaModels = $derived.by(() => {
-    const builtin = rawModels.filter((m) => getModelKind(m) === kind)
+    const modelKind = kind === 'liveCaption' ? 'stt' : kind
+    const builtin = rawModels.filter((m) => getModelKind(m) === modelKind)
     const seen = new Set(builtin.map((m) => m.id))
     return [...builtin, ...customKindModels.filter((m) => m.id && !seen.has(m.id))]
   })
@@ -233,7 +237,7 @@
     const loadCustom = () => {
       api.getCustomModels?.().then((d: any) => {
         customKindModels = parseCustomModelsResponse(d).filter(
-          (m: any) => getModelKind(m) === k && (m.providerAlias === storageAlias || m.providerAlias === pid)
+          (m: any) => getModelKind(m) === (k === 'liveCaption' ? 'stt' : k) && (m.providerAlias === storageAlias || m.providerAlias === pid)
         )
       }).catch(() => {})
     }
@@ -921,6 +925,10 @@
     <TtsExampleCard providerId={provider.id} {apiKeys} {connections} />
   {:else if kind === 'stt'}
     <SttExampleCard providerId={provider.id} {apiKeys} {connections} />
+  {:else if kind === 'liveCaption'}
+    {#if provider.liveCaptionConfig}
+      <LiveCaptionExampleCard providerId={provider.id} providerAlias={provider.alias || provider.id} capability={provider.liveCaptionConfig} {apiKeys} />
+    {/if}
   {:else}
     <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
     <h2 class="text-lg font-semibold text-text-main mb-4">Example</h2>

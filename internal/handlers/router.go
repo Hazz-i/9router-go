@@ -4,10 +4,12 @@ import (
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/guardrails"
+	"9router/proxy/internal/handlers/caption"
 	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlers/dashboard"
 	"9router/proxy/internal/handlers/media"
 	"9router/proxy/internal/handlers/oauth"
+	"9router/proxy/internal/handlers/realtime"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlers/sso"
 	"9router/proxy/internal/handlerutil"
@@ -44,11 +46,14 @@ func SetupRoutes(r interface {
 	Put(pattern string, handlerFn http.HandlerFunc)
 	Patch(pattern string, handlerFn http.HandlerFunc)
 	Delete(pattern string, handlerFn http.HandlerFunc)
+	Options(pattern string, handlerFn http.HandlerFunc)
 	HandleFunc(pattern string, handlerFn http.HandlerFunc)
 }, repo *db.Repo, ts *TokenSaverConfig) *chat.ChatHandler {
 	chatH := chat.NewChatHandler(repo, ts)
 	mediaH := media.NewMediaHandler(repo, ts, chatH)
 	oauthH := oauth.NewOAuthHandler(repo)
+	realtimeH := realtime.NewHandler(repo)
+	captionH := caption.NewHandler(repo)
 
 	dashH := dashboard.NewDashboardHandler(repo, ts)
 	if chatH != nil {
@@ -99,6 +104,23 @@ func SetupRoutes(r interface {
 	r.Post("/search", mediaH.HandleSearch)
 	r.Post("/scrape", mediaH.HandleScrape)
 	r.Post("/systemone", mediaH.HandleSystemone)
+
+	// Realtime Voice & Live Caption WebSocket domain (upstream /v1/realtime +
+	// /v1/audio/live-transcriptions, both path spellings each — plus the bare
+	// spellings RequestLogger rewrites /v1/... down to before the router
+	// matches). GET without an upgrade header serves the JSON protocol-info
+	// document from the handler; the OPTIONS preflight is a plain HTTP answer,
+	// so it lives here.
+	for _, path := range []string{"/realtime", "/v1/realtime", "/api/v1/realtime"} {
+		r.Get(path, realtimeH.HandleWS)
+		r.Post(path, realtimeH.HandleUpgradeRequired)
+		r.Options(path, corsPreflight)
+	}
+	for _, path := range []string{"/audio/live-transcriptions", "/v1/audio/live-transcriptions", "/api/v1/audio/live-transcriptions"} {
+		r.Get(path, captionH.HandleWS)
+		r.Post(path, captionH.HandleUpgradeRequired)
+		r.Options(path, corsPreflight)
+	}
 
 	// The relay-deploy endpoints live in the dashboard group below, mounted
 	// under /api/proxy-pools/*-deploy behind RequireDashboardAuth (upstream
@@ -155,6 +177,17 @@ func SetupRoutes(r interface {
 	// Debug Tracing Domain (p50/p95 latency per provider+model)
 	r.Get("/debug/traces", HandleDebugTraces)
 	return chatH
+}
+
+// corsPreflight answers OPTIONS on the WebSocket endpoints: browsers running a
+// dashboard on another origin still dial these sockets directly. Upstream
+// answers 200 empty with the wildcard CORS headers (route.js).
+func corsPreflight(w http.ResponseWriter, _ *http.Request) {
+	header := w.Header()
+	header.Set("Access-Control-Allow-Origin", "*")
+	header.Set("Access-Control-Allow-Headers", "*")
+	header.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // SetupDashboardRoutes mounts the dashboard REST API. It is wrapped in

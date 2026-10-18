@@ -44,6 +44,10 @@ describe('providers & media separation', () => {
     assert.ok(sttProviders.some((p) => p.id === 'deepgram'))
     assert.ok(sttProviders.some((p) => p.id === 'openai'))
 
+    const captionProviders = getProvidersByKind('liveCaption')
+    assert.deepStrictEqual(captionProviders.map((p) => p.id).sort(), ['deepgram', 'elevenlabs', 'selfhosted-stt'])
+    assert.ok(captionProviders.every((p) => p.liveCaptionConfig))
+
     const imageProviders = getProvidersByKind('image')
     assert.ok(imageProviders.some((p) => p.id === 'black-forest-labs'))
     assert.ok(imageProviders.some((p) => p.id === 'fal-ai'))
@@ -64,6 +68,7 @@ describe('providers & media separation', () => {
     assert.strictEqual(pathToTab('/dashboard/media-providers/image'), 'media-image')
     assert.strictEqual(pathToTab('/dashboard/media-providers/tts'), 'media-tts')
     assert.strictEqual(pathToTab('/dashboard/media-providers/stt'), 'media-stt')
+    assert.strictEqual(pathToTab('/dashboard/media-providers/liveCaption'), 'media-live-caption')
     assert.strictEqual(pathToTab('/dashboard/media-providers/video'), 'media-video')
     assert.strictEqual(pathToTab('/dashboard/media-providers/web'), 'media-web')
 
@@ -71,6 +76,7 @@ describe('providers & media separation', () => {
     assert.strictEqual(TAB_ROUTES['media-image'], '/dashboard/media-providers/image')
     assert.strictEqual(TAB_ROUTES['media-tts'], '/dashboard/media-providers/tts')
     assert.strictEqual(TAB_ROUTES['media-stt'], '/dashboard/media-providers/stt')
+    assert.strictEqual(TAB_ROUTES['media-live-caption'], '/dashboard/media-providers/liveCaption')
     assert.strictEqual(TAB_ROUTES['media-video'], '/dashboard/media-providers/video')
     assert.strictEqual(TAB_ROUTES['media-web'], '/dashboard/media-providers/web')
   })

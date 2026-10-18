@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -724,7 +725,17 @@ func RequireRateLimit(rl *RateLimiter, defaults Defaults, usage TokenUsageReader
 			// FIFO order up to the key's queue timeout. The caller's context is
 			// passed so a client that hangs up leaves the queue instead of being
 			// granted a slot and dispatched upstream for nobody.
-			waited, ok := rl.Acquire(r.Context(), apiKey.ID, limits.RPM, limits.Concurrency, limits.QueueTimeout)
+			//
+			// A WebSocket upgrade on the four realtime/caption paths must not
+			// claim a concurrency slot: the release below is a defer, so a
+			// hijacked socket would hold the slot until the session ends and a
+			// single idle voice call could lock its key out. The handshake
+			// still counts against RPM (a stamp is recorded either way).
+			concurrency := limits.Concurrency
+			if isWebSocketUpgrade(r) {
+				concurrency = 0
+			}
+			waited, ok := rl.Acquire(r.Context(), apiKey.ID, limits.RPM, concurrency, limits.QueueTimeout)
 			if !ok {
 				// The TPM charge was taken before the queue. A request the queue
 				// refused never reaches the metering path, so the settle hook can
@@ -740,7 +751,7 @@ func RequireRateLimit(rl *RateLimiter, defaults Defaults, usage TokenUsageReader
 			if waited > 0 {
 				observ.ObserveRateLimitQueueWait(waited.Seconds())
 			}
-			if limits.Concurrency > 0 {
+			if concurrency > 0 {
 				defer rl.ReleaseConcurrency(apiKey.ID)
 			}
 
@@ -755,6 +766,16 @@ func RequireRateLimit(rl *RateLimiter, defaults Defaults, usage TokenUsageReader
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// isWebSocketUpgrade reports whether the request is a WebSocket handshake on
+// one of the four realtime/caption upgrade paths. Only those requests skip the
+// concurrency slot; a plain GET on the same path (the JSON protocol-info
+// document) is still a short request and keeps the slot semantics.
+func isWebSocketUpgrade(r *http.Request) bool {
+	return isWebSocketAuthPath(r.URL.Path) &&
+		r.Method == http.MethodGet &&
+		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 }
 
 // checkTPMOnly charges the token bucket and names the refusal when it is full.
