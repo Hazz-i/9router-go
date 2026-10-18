@@ -155,11 +155,51 @@ func AuthenticatedApiKeyFromContext(ctx context.Context) *models.APIKey {
 	return keyObj
 }
 
+// websocketAuthPaths are the four WebSocket upgrade endpoints served by the
+// realtime-voice and live-caption lanes, in every spelling a client can dial:
+// the raw spellings upstream serves (/v1/realtime, /api/v1/realtime,
+// /v1/audio/live-transcriptions, /api/v1/audio/live-transcriptions) plus the
+// two RequestLogger-rewritten forms (/v1/... is stripped to /... before the
+// router matches). A browser cannot set custom headers on a WebSocket
+// handshake, so the client token must travel in the query string (upstream
+// extractTokenFromRequest, realtimeVoiceWs.js:13 / liveCaptionWs.js:10).
+func isWebSocketAuthPath(path string) bool {
+	switch path {
+	case "/v1/realtime", "/api/v1/realtime", "/realtime",
+		"/v1/audio/live-transcriptions", "/api/v1/audio/live-transcriptions",
+		"/audio/live-transcriptions":
+		return true
+	}
+	return false
+}
+
+// websocketQueryToken reads the token from the query string, in the same
+// parameter order upstream checks: apiKey, api_key, token, key.
+func websocketQueryToken(r *http.Request) string {
+	q := r.URL.Query()
+	for _, name := range []string{"apiKey", "api_key", "token", "key"} {
+		if v := q.Get(name); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // ExtractApiKey extracts the client API key from the request.
 // For standard API routes, only header-based auth is accepted to avoid leaks.
 // For EventSource / SSE stream endpoints (where browsers cannot set custom headers),
 // query parameters `key` or `apiKey` are accepted as a fallback.
+// The four WebSocket endpoints above the same rule with upstream's source
+// order: query param first, then `Authorization: Bearer`, then `x-api-key`.
 func ExtractApiKey(r *http.Request) string {
+	// 0. WebSocket endpoints: browsers cannot send headers on a handshake, so
+	// the query token wins there (upstream order: query → Bearer → x-api-key).
+	if isWebSocketAuthPath(r.URL.Path) {
+		if token := websocketQueryToken(r); token != "" {
+			return token
+		}
+	}
+
 	// 1. Try Authorization header
 	authHeader := r.Header.Get("Authorization")
 	if authHeader != "" {

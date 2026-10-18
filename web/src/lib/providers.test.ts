@@ -10,7 +10,6 @@ import {
 } from './providers'
 import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from './models'
 import { pathToTab, TAB_ROUTES } from './router'
-
 describe('providers & media separation', () => {
   it('correctly classifies chat vs pure media providers', () => {
     const openai = PROVIDER_CATALOG.find((p) => p.id === 'openai')
@@ -44,6 +43,10 @@ describe('providers & media separation', () => {
     assert.ok(sttProviders.some((p) => p.id === 'deepgram'))
     assert.ok(sttProviders.some((p) => p.id === 'openai'))
 
+    const captionProviders = getProvidersByKind('liveCaption')
+    assert.deepStrictEqual(captionProviders.map((p) => p.id).sort(), ['deepgram', 'elevenlabs', 'selfhosted-stt'])
+    assert.ok(captionProviders.every((p) => p.liveCaptionConfig))
+
     const imageProviders = getProvidersByKind('image')
     assert.ok(imageProviders.some((p) => p.id === 'black-forest-labs'))
     assert.ok(imageProviders.some((p) => p.id === 'fal-ai'))
@@ -64,6 +67,7 @@ describe('providers & media separation', () => {
     assert.strictEqual(pathToTab('/dashboard/media-providers/image'), 'media-image')
     assert.strictEqual(pathToTab('/dashboard/media-providers/tts'), 'media-tts')
     assert.strictEqual(pathToTab('/dashboard/media-providers/stt'), 'media-stt')
+    assert.strictEqual(pathToTab('/dashboard/media-providers/liveCaption'), 'media-live-caption')
     assert.strictEqual(pathToTab('/dashboard/media-providers/video'), 'media-video')
     assert.strictEqual(pathToTab('/dashboard/media-providers/web'), 'media-web')
 
@@ -71,6 +75,7 @@ describe('providers & media separation', () => {
     assert.strictEqual(TAB_ROUTES['media-image'], '/dashboard/media-providers/image')
     assert.strictEqual(TAB_ROUTES['media-tts'], '/dashboard/media-providers/tts')
     assert.strictEqual(TAB_ROUTES['media-stt'], '/dashboard/media-providers/stt')
+    assert.strictEqual(TAB_ROUTES['media-live-caption'], '/dashboard/media-providers/liveCaption')
     assert.strictEqual(TAB_ROUTES['media-video'], '/dashboard/media-providers/video')
     assert.strictEqual(TAB_ROUTES['media-web'], '/dashboard/media-providers/web')
   })
@@ -199,5 +204,51 @@ describe('providers & media separation', () => {
       (p) => !shared.has(p.id) && !assets.has(`${p.id}.png`) && !assets.has(`${p.id}.svg`)
     ).map((p) => p.id)
     assert.deepStrictEqual(missing, [], `providers without artwork: ${missing.join(', ')}`)
+  })
+})
+
+describe('realtime voice catalog (upstream parity)', () => {
+  it('lists exactly the providers declaring the realtime kind', () => {
+    const providers = getProvidersByKind('realtime')
+    assert.deepStrictEqual(providers.map((p) => p.id).sort(), ['deepgram', 'gemini'])
+    assert.ok(providers.every((p) => p.serviceKinds?.includes('realtime')))
+  })
+
+  it('lists liveCaption providers by declared kind, not by liveCaptionConfig presence', () => {
+    const synthetic = {
+      id: 'synthetic-lc',
+      name: 'Synthetic LC',
+      category: 'apikey' as const,
+      alias: 'synthetic-lc',
+      color: '#000000',
+      icon: 'mic',
+      serviceKinds: ['liveCaption'],
+    }
+    PROVIDER_CATALOG.push(synthetic)
+    try {
+      const providers = getProvidersByKind('liveCaption')
+      assert.ok(providers.some((p) => p.id === 'synthetic-lc'), 'kind without config must still be listed')
+      assert.ok(providers.some((p) => p.id === 'deepgram'), 'deepgram stays listed')
+    } finally {
+      PROVIDER_CATALOG.pop()
+    }
+  })
+
+  it('carries upstream realtimeConfig defaults', () => {
+    const gemini = PROVIDER_CATALOG.find((p) => p.id === 'gemini')
+    const deepgram = PROVIDER_CATALOG.find((p) => p.id === 'deepgram')
+    assert.strictEqual(gemini?.realtimeConfig?.defaultModel, 'gemini-3.8-live')
+    assert.strictEqual(deepgram?.realtimeConfig?.defaultModel, 'voice-agent')
+  })
+
+  it('keeps deepgram option-group fallbacks and flux v2 settings pairs', () => {
+    const cfg = PROVIDER_CATALOG.find((p) => p.id === 'deepgram')?.realtimeConfig
+    assert.deepStrictEqual(cfg?.listen?.provider, { type: 'deepgram', model: 'nova-3' })
+    assert.deepStrictEqual(cfg?.speak?.provider, { type: 'deepgram', model: 'aura-2-thalia-en' })
+    for (const id of ['flux-general-en', 'flux-general-multi']) {
+      const entry = cfg?.listen?.providers?.[0].models?.find((m) => m.id === id)
+      assert.ok(entry, `${id} missing from deepgram listen group`)
+      assert.deepStrictEqual(entry.settings?.provider?.version, 'v2')
+    }
   })
 })

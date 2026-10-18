@@ -93,6 +93,8 @@
     { tab: 'media-image' as ActiveTab, label: 'Text to Image', icon: 'brush' },
     { tab: 'media-tts' as ActiveTab, label: 'Text To Speech', icon: 'record_voice_over' },
     { tab: 'media-stt' as ActiveTab, label: 'Speech To Text', icon: 'mic' },
+    { tab: 'media-live-caption' as ActiveTab, label: 'Live Caption', icon: 'closed_caption' },
+    { tab: 'media-realtime' as ActiveTab, label: 'Realtime Voice', icon: 'phone_in_talk' },
     { tab: 'media-video' as ActiveTab, label: 'Video', icon: 'movie' },
     { tab: 'media-systemone' as ActiveTab, label: 'System One', icon: 'psychology' },
     { tab: 'media-web' as ActiveTab, label: 'Web Fetch & Search', icon: 'travel_explore' },

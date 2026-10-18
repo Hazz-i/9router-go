@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import {
   api,
+  buildLiveCaptionSocketUrl,
   formatApiError,
   getAuthHeaders,
   getStoredAPIKey,
@@ -12,6 +13,12 @@ import {
 } from './client'
 
 describe('dashboard API authentication and errors', () => {
+
+  it('builds an authenticated live-caption websocket URL with protocol defaults', () => {
+    expect(buildLiveCaptionSocketUrl('https://router.example', { model: 'dg/nova-3', apiKey: 'a b' })).toBe(
+      'wss://router.example/v1/audio/live-transcriptions?model=dg%2Fnova-3&language=id&encoding=linear16&sample_rate=16000&apiKey=a+b'
+    )
+  })
 
   const storage: Record<string, string> = {}
   Object.defineProperty(globalThis, 'localStorage', {

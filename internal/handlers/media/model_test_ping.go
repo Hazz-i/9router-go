@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/handlers/dashboard"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/translator"
 )
 
@@ -78,6 +80,13 @@ func (h *MediaHandler) HandleTestModel(w http.ResponseWriter, r *http.Request) {
 // body has to be read out of the payload, not the status line.
 func (h *MediaHandler) probeModel(r *http.Request, model, kind string) testModelResult {
 	start := time.Now()
+	// The two WebSocket kinds are probed over the gateway's own WS lanes, not
+	// through an HTTP handler, so they branch before the recorder dispatch.
+	if isWSProbeKind(kind) {
+		return wsProbeVerdict(dashboard.ProbeWebSocketModel(
+			r.Context(), probeGatewayOrigin(r), model, kind, middleware.ExtractApiKey(r),
+		))
+	}
 	payload := probeFor(kind, model)
 	ctx, cancel := context.WithTimeout(r.Context(), testModelTimeout)
 	defer cancel()
@@ -123,10 +132,38 @@ func (h *MediaHandler) dispatchProbe(rec *httptest.ResponseRecorder, probe *http
 // knows how to probe. "" is the LLM default and is always probeable.
 func isProbeKind(kind string) bool {
 	switch kind {
-	case "", "embedding", "image", "tts", "stt", "video", "systemone":
+	case "", "embedding", "image", "tts", "stt", "video", "systemone", "realtime", "liveCaption":
 		return true
 	}
 	return false
+}
+
+// isWSProbeKind reports the two kinds whose probe dials the gateway's own
+// WebSocket endpoint instead of going through an HTTP handler dispatch.
+func isWSProbeKind(kind string) bool {
+	return kind == "realtime" || kind == "liveCaption"
+}
+
+// probeGatewayOrigin is the gateway base the WS probe dials: the host the
+// dashboard request itself reached, with the scheme the TLS/forwarded-headers
+// evidence supports (pattern: the publicOrigin resolution other handlers do).
+func probeGatewayOrigin(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+		if p := strings.ToLower(strings.Split(proto, ",")[0]); p == "https" || p == "http" {
+			scheme = p
+		}
+	}
+	return scheme + "://" + r.Host
+}
+
+// wsProbeVerdict maps the WebSocket probe's verdict onto the shared chip shape
+// ({ok, latencyMs, error}), so the SPA renders it like every other kind.
+func wsProbeVerdict(ws dashboard.WSProbeResult) testModelResult {
+	return testModelResult{OK: ws.OK, LatencyMs: ws.LatencyMs, Error: ws.Error}
 }
 
 // probePath names the endpoint a probe is dispatched through, so a failure

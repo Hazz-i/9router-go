@@ -240,6 +240,7 @@ Memblokir:
 - **Clamp `max→high` mimo** (port `1b72f02e`) — `0eafdedf`
 - **Responses wiring + non-streaming** (`/v1/responses` pindah ke `ChatHandler`, penjaga native, dua hop Claude, `ChatResponseToResponses`) — `5c9a654d`
 - **gofmt 32 file** (branch `chore/gofmt`) — `c8e9de66`
+- **Realtime Voice + Live Caption, dua transport WebSocket** (`/v1/realtime` → `session.created`, `/v1/audio/live-transcriptions` → `connected`/`ready`/`word`; rute, auth query-param untuk socket browser, seam concurrency rate-limit, probe WS chip "Test" dashboard) — branch `feature/realtime-voice-live-caption` (issue #388)
 
 Keempat diff Responses sudah terpush dan saling berantai. `/v1/responses` **sudah** memakai
 penerjemah; tidak ada lagi kode yang sengaja tidak terpanggil.

@@ -149,6 +149,97 @@ func TestRequireApiKeyMiddleware_ProtectsAntigravityExchange(t *testing.T) {
 	}
 }
 
+// TestExtractApiKey_WebSocketPaths pins the browser-socket auth seam: on the
+// four realtime/caption upgrade paths a query token is accepted first (upstream
+// extractTokenFromRequest order: query → Bearer → x-api-key), and on any other
+// path a query token is still rejected.
+func TestExtractApiKey_WebSocketPaths(t *testing.T) {
+	wsPaths := []string{
+		"/v1/realtime",
+		"/api/v1/realtime",
+		"/v1/audio/live-transcriptions",
+		"/api/v1/audio/live-transcriptions",
+	}
+
+	for _, path := range wsPaths {
+		for _, param := range []string{"apiKey", "api_key", "token", "key"} {
+			t.Run(path+" accepts ?"+param, func(t *testing.T) {
+				r := httptest.NewRequest(http.MethodGet, path+"?"+param+"=query-token", nil)
+				if got := ExtractApiKey(r); got != "query-token" {
+					t.Errorf("ExtractApiKey() = %q, want %q", got, "query-token")
+				}
+			})
+		}
+
+		t.Run(path+" query wins over headers (upstream order)", func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, path+"?apiKey=query-token", nil)
+			r.Header.Set("Authorization", "Bearer header-token")
+			r.Header.Set("X-API-Key", "xheader-token")
+			if got := ExtractApiKey(r); got != "query-token" {
+				t.Errorf("ExtractApiKey() = %q, want the query token", got)
+			}
+		})
+
+		t.Run(path+" falls back to Bearer and x-api-key", func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			r.Header.Set("Authorization", "Bearer header-token")
+			if got := ExtractApiKey(r); got != "header-token" {
+				t.Errorf("Bearer fallback = %q, want header-token", got)
+			}
+			r2 := httptest.NewRequest(http.MethodGet, path, nil)
+			r2.Header.Set("X-API-Key", "xheader-token")
+			if got := ExtractApiKey(r2); got != "xheader-token" {
+				t.Errorf("x-api-key fallback = %q, want xheader-token", got)
+			}
+		})
+	}
+
+	t.Run("unrelated path still rejects a query token", func(t *testing.T) {
+		for _, req := range []*http.Request{
+			httptest.NewRequest(http.MethodGet, "/v1/chat/completions?apiKey=query-token", nil),
+			httptest.NewRequest(http.MethodGet, "/api/v1/realtime/other?key=query-token", nil),
+			httptest.NewRequest(http.MethodGet, "/v1/audio/live-transcriptions.xlsx?token=query-token", nil),
+		} {
+			if got := ExtractApiKey(req); got != "" {
+				t.Errorf("%s: ExtractApiKey() = %q, want rejected (no header present)", req.URL.Path, got)
+			}
+		}
+	})
+}
+
+// TestRequireApiKeyMiddleware_QueryTokenOnWebSocketPaths proves the seam end to
+// end: a valid query key authenticates the handshake, an invalid one does not.
+func TestRequireApiKeyMiddleware_QueryTokenOnWebSocketPaths(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	handler := RequireApiKey(repo)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/realtime?apiKey=valid-token", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid query token on /v1/realtime status = %d, want 200", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/audio/live-transcriptions?token=valid-token", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid ?token on live-transcriptions status = %d, want 200", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/realtime?key=bad-token", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid query token status = %d, want 401", rec.Code)
+	}
+}
+
 func TestGetAuthenticatedApiKey(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
