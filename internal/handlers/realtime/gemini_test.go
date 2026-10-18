@@ -218,10 +218,47 @@ func TestGeminiWire_UpstreamEventMappingOrderWithIDRotation(t *testing.T) {
 	}
 }
 
+// updateObserver wraps an Adapter and signals handled after the client read
+// loop has finished handling a session.update: the happens-before edge that
+// lets the merge test release the fake's handshake gate only once
+// handleSessionUpdate's merge (its mu critical section) is complete. Nothing
+// observable flows to the client or the fake before the upstream opens (the
+// merge path is silent — sendSetup no-ops while up is closed), so "the
+// gateway processed the update" would otherwise be hoped for, not enforced.
+type updateObserver struct {
+	Adapter
+	handled chan struct{}
+}
+
+func (o *updateObserver) HandleClientEvent(event map[string]any) {
+	o.Adapter.HandleClientEvent(event)
+	if eventType(event) == "session.update" {
+		select {
+		case o.handled <- struct{}{}:
+		default:
+		}
+	}
+}
+
 // TestGeminiWire_SessionUpdateBeforeSetupIsMergedIntoSetupFrame: a
 // session.update arriving before the upstream dial completes is applied into
 // the (still un-sent) setup frame — voice and instructions both.
 func TestGeminiWire_SessionUpdateBeforeSetupIsMergedIntoSetupFrame(t *testing.T) {
+	// Wrap the gemini factory FIRST: its restore is registered earliest and
+	// therefore runs LAST in the LIFO cleanup chain, after waitSessions has
+	// drained every session goroutine — so the map write can never race the
+	// createRealtimeAdapter read on a live handler goroutine.
+	handled := make(chan struct{}, 1)
+	orig := realtimeAdapters["gemini"]
+	realtimeAdapters["gemini"] = func(c *adapterCtx) (Adapter, error) {
+		ad, err := orig(c)
+		if err != nil {
+			return nil, err
+		}
+		return &updateObserver{Adapter: ad, handled: handled}, nil
+	}
+	t.Cleanup(func() { realtimeAdapters["gemini"] = orig })
+
 	drive := func(conn *websocket.Conn) {
 		writeJSON(t, conn, map[string]any{"setupComplete": map[string]any{}})
 	}
@@ -236,17 +273,26 @@ func TestGeminiWire_SessionUpdateBeforeSetupIsMergedIntoSetupFrame(t *testing.T)
 			fake.recordRaw(data)
 		}
 		drive(conn)
-		time.Sleep(300 * time.Millisecond)
 	})
 	database, repo := newTestRepo(t)
 	seedConnection(t, database, "gemini", "gk-1", map[string]any{"baseUrl": fake.URL})
 	gateway := newGateway(t, repo, map[string]string{"gemini": "wss://real-gemini.invalid/ws"})
 
-	// Stage the client frame BEFORE the upstream handshake completes.
+	// Stage the client frame BEFORE the upstream handshake completes, and
+	// release the gate only once the gateway has actually MERGED it — the
+	// dial goroutine's sendSetup then happens entirely after the merge.
 	client := dialWS(t, gateway.URL, "", nil)
 	writeJSON(t, client, map[string]any{
 		"type":    "session.update",
 		"session": map[string]any{"voice": "Kore", "instructions": "Custom instruction"},
+	})
+	waitFor(t, 3*time.Second, "session.update handled by the client read loop", func() bool {
+		select {
+		case <-handled:
+			return true
+		default:
+			return false
+		}
 	})
 	fake.open()
 	waitForEvent(t, client, "session.created", 3*time.Second)
