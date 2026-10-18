@@ -60,7 +60,7 @@ func (s *session) setupGemini() error {
 		})
 	}
 
-	go s.pumpGemini()
+	s.spawn(s.pumpGemini)
 	return nil
 }
 

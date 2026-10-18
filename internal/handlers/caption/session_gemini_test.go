@@ -11,7 +11,7 @@ import (
 )
 
 // newGeminiSession wires a Gemini fake upstream and dials the client.
-func newGeminiSession(t *testing.T, script func(*websocket.Conn), query string) (*fakeUpstream, *websocket.Conn) {
+func newGeminiSession(t *testing.T, script func(*fakeUpstream, *websocket.Conn), query string) (*fakeUpstream, *websocket.Conn) {
 	t.Helper()
 	up := newFakeUpstream(t, script)
 	h := newTestHandler(t)
@@ -23,18 +23,17 @@ func newGeminiSession(t *testing.T, script func(*websocket.Conn), query string) 
 
 func TestCaptionSessionGemini(t *testing.T) {
 	t.Run("setup frame is sent on open with the transcription taps", func(t *testing.T) {
-		var up *fakeUpstream
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			_, data, err := conn.ReadMessage()
 			if err != nil {
 				return
 			}
-			var f map[string]any
-			if json.Unmarshal(data, &f) == nil {
-				up.store("setup", f)
+			var frame map[string]any
+			if json.Unmarshal(data, &frame) == nil {
+				f.store("setup", frame)
 			}
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		up, conn := newGeminiSession(t, script, "model=gemini/gemini-3.8-live&sample_rate=8000")
 
@@ -72,18 +71,17 @@ func TestCaptionSessionGemini(t *testing.T) {
 	})
 
 	t.Run("legacy live model ids remap to gemini-3.8-live", func(t *testing.T) {
-		var up *fakeUpstream
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			_, data, err := conn.ReadMessage()
 			if err != nil {
 				return
 			}
-			var f map[string]any
-			if json.Unmarshal(data, &f) == nil {
-				up.store("setup", f)
+			var frame map[string]any
+			if json.Unmarshal(data, &frame) == nil {
+				f.store("setup", frame)
 			}
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		up, conn := newGeminiSession(t, script, "model=gemini/gemini-2.0-flash-exp")
 
@@ -96,8 +94,7 @@ func TestCaptionSessionGemini(t *testing.T) {
 	})
 
 	t.Run("audio forwards as 16 kHz PCM regardless of negotiated rate", func(t *testing.T) {
-		var up *fakeUpstream
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			// read the setup frame first
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			if _, _, err := conn.ReadMessage(); err != nil {
@@ -107,11 +104,11 @@ func TestCaptionSessionGemini(t *testing.T) {
 			if err != nil {
 				return
 			}
-			var f map[string]any
-			if json.Unmarshal(data, &f) == nil {
-				up.store("audio", f)
+			var frame map[string]any
+			if json.Unmarshal(data, &frame) == nil {
+				f.store("audio", frame)
 			}
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		up, conn := newGeminiSession(t, script, "model=gemini/gemini-3.8-live&sample_rate=24000")
 
@@ -136,7 +133,7 @@ func TestCaptionSessionGemini(t *testing.T) {
 	})
 
 	t.Run("transcription deltas become words with flat 0.4 s clock", func(t *testing.T) {
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			if _, _, err := conn.ReadMessage(); err != nil { // setup frame
 				return
@@ -145,7 +142,7 @@ func TestCaptionSessionGemini(t *testing.T) {
 				"inputTranscription": map[string]any{"text": "halo "}}})
 			_ = sendJSON(conn, map[string]any{"serverContent": map[string]any{
 				"outputTranscription": map[string]any{"text": "dunia"}}})
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		_, conn := newGeminiSession(t, script, "model=gemini/gemini-3.8-live")
 
@@ -166,13 +163,13 @@ func TestCaptionSessionGemini(t *testing.T) {
 	})
 
 	t.Run("in-frame errors surface without closing the client", func(t *testing.T) {
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			if _, _, err := conn.ReadMessage(); err != nil { // setup frame
 				return
 			}
 			_ = sendJSON(conn, map[string]any{"error": map[string]any{"message": "boom"}})
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		_, conn := newGeminiSession(t, script, "model=gemini/gemini-3.8-live")
 

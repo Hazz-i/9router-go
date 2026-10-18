@@ -12,7 +12,7 @@ import (
 )
 
 // newElevenLabsSession wires an ElevenLabs fake upstream and dials the client.
-func newElevenLabsSession(t *testing.T, script func(*websocket.Conn), query string) (*fakeUpstream, *websocket.Conn) {
+func newElevenLabsSession(t *testing.T, script func(*fakeUpstream, *websocket.Conn), query string) (*fakeUpstream, *websocket.Conn) {
 	t.Helper()
 	up := newFakeUpstream(t, script)
 	h := newTestHandler(t)
@@ -24,18 +24,17 @@ func newElevenLabsSession(t *testing.T, script func(*websocket.Conn), query stri
 
 func TestCaptionSessionElevenLabs(t *testing.T) {
 	t.Run("audio chunks are base64 wrapped and the realtime model id is hardcoded", func(t *testing.T) {
-		var up *fakeUpstream
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			_, data, err := conn.ReadMessage()
 			if err != nil {
 				return
 			}
-			var f map[string]any
-			if json.Unmarshal(data, &f) == nil {
-				up.store("chunk", f)
+			var frame map[string]any
+			if json.Unmarshal(data, &frame) == nil {
+				f.store("chunk", frame)
 			}
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		up, conn := newElevenLabsSession(t, script, "model=el/scribe_v2&sample_rate=8000")
 
@@ -98,14 +97,14 @@ func TestCaptionSessionElevenLabs(t *testing.T) {
 	})
 
 	t.Run("session_started emits ready then plain commits synthesize timings", func(t *testing.T) {
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = sendJSON(conn, map[string]any{"message_type": "session_started", "session_id": "s1"})
 			_ = sendJSON(conn, map[string]any{"message_type": "committed_transcript", "text": "halo dunia"})
 			_ = sendJSON(conn, map[string]any{
 				"message_type": "partial_transcript",
 				"text":         "  lama  ",
 			})
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		_, conn := newElevenLabsSession(t, script, "model=el/scribe_v2_realtime")
 
@@ -142,7 +141,7 @@ func TestCaptionSessionElevenLabs(t *testing.T) {
 	})
 
 	t.Run("timestamped commits carry logprob confidence", func(t *testing.T) {
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = sendJSON(conn, map[string]any{
 				"message_type": "committed_transcript_with_timestamps",
 				"text":         "halo dunia",
@@ -151,7 +150,7 @@ func TestCaptionSessionElevenLabs(t *testing.T) {
 					{"type": "word", "text": "dunia", "start": 1.4, "end": 1.9, "logprob": 1},
 				},
 			})
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		_, conn := newElevenLabsSession(t, script, "model=el/scribe_v2_realtime")
 
@@ -176,19 +175,18 @@ func TestCaptionSessionElevenLabs(t *testing.T) {
 	})
 
 	t.Run("finalize sends an empty commit chunk", func(t *testing.T) {
-		var up *fakeUpstream
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = sendJSON(conn, map[string]any{"message_type": "session_started"})
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			_, data, err := conn.ReadMessage()
 			if err != nil {
 				return
 			}
-			var f map[string]any
-			if json.Unmarshal(data, &f) == nil {
-				up.store("commit", f)
+			var frame map[string]any
+			if json.Unmarshal(data, &frame) == nil {
+				f.store("commit", frame)
 			}
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		up, conn := newElevenLabsSession(t, script, "model=el/scribe_v2_realtime")
 

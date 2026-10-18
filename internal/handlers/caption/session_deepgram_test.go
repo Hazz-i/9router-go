@@ -30,7 +30,7 @@ func dgResults(transcript string, isFinal bool, words ...map[string]any) map[str
 
 // newDeepgramSession wires a Deepgram fake upstream, a seeded connection
 // and a client dial with the given query.
-func newDeepgramSession(t *testing.T, script func(*websocket.Conn), query string) (*Handler, *fakeUpstream, *websocket.Conn) {
+func newDeepgramSession(t *testing.T, script func(*fakeUpstream, *websocket.Conn), query string) (*Handler, *fakeUpstream, *websocket.Conn) {
 	t.Helper()
 	up := newFakeUpstream(t, script)
 	h := newTestHandler(t)
@@ -117,12 +117,12 @@ func TestCaptionSessionDeepgram(t *testing.T) {
 	})
 
 	t.Run("interims ride partial and finals commit words plus a chunk", func(t *testing.T) {
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = sendJSON(conn, dgResults("halo dunia", false,
 				dgWord("halo", "", 0, 0.4), dgWord("dunia", "", 0.44, 0.9)))
 			_ = sendJSON(conn, dgResults("halo dunia.", true,
 				dgWord("halo", "Halo", 0, 0.4), dgWord("dunia", "dunia.", 0.44, 0.9)))
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		_, _, conn := newDeepgramSession(t, script, "model=dg/nova-3")
 
@@ -163,7 +163,7 @@ func TestCaptionSessionDeepgram(t *testing.T) {
 	})
 
 	t.Run("finalize dedups the re-emitted committed segment", func(t *testing.T) {
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = sendJSON(conn, dgResults("halo dunia.", true,
 				dgWord("halo", "Halo", 0, 0.4), dgWord("dunia", "dunia.", 0.44, 0.9)))
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -185,7 +185,7 @@ func TestCaptionSessionDeepgram(t *testing.T) {
 			_ = sendJSON(conn, dgResults("halo dunia.", true,
 				dgWord("halo", "Halo", 0, 0.4), dgWord("dunia", "dunia.", 0.44, 0.9)))
 			_ = sendJSON(conn, dgResults("satu.", true, dgWord("satu", "satu.", 1.2, 1.6)))
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		_, _, conn := newDeepgramSession(t, script, "model=dg/nova-3")
 
@@ -213,29 +213,27 @@ func TestCaptionSessionDeepgram(t *testing.T) {
 	})
 
 	t.Run("keepalive forwards as KeepAlive and audio passes through raw", func(t *testing.T) {
-		var up *fakeUpstream
-		var conn *websocket.Conn
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			_, data, err := conn.ReadMessage()
 			if err != nil {
 				return
 			}
-			var f map[string]any
-			if json.Unmarshal(data, &f) == nil {
-				up.store("keepalive", f)
+			var frame map[string]any
+			if json.Unmarshal(data, &frame) == nil {
+				f.store("keepalive", frame)
 			}
 			mt, audio, err := conn.ReadMessage()
 			if err != nil {
 				return
 			}
-			if mt != websocket.BinaryMessage {
-				t.Errorf("upstream frame type = %d, want binary", mt)
-			}
-			up.store("binary", audio)
-			idleScript(conn)
+			// record (never assert) from the server goroutine; the test
+			// goroutine checks the frame type below.
+			f.store("binaryType", mt)
+			f.store("binary", audio)
+			idleScript(f, conn)
 		}
-		_, up, conn = newDeepgramSession(t, script, "model=dg/nova-3")
+		_, up, conn := newDeepgramSession(t, script, "model=dg/nova-3")
 
 		expectFrameType(t, conn, "connected")
 		expectFrameType(t, conn, "ready")
@@ -254,10 +252,13 @@ func TestCaptionSessionDeepgram(t *testing.T) {
 		if len(audio) != 3 || audio[0] != 1 {
 			t.Errorf("audio forwarded as %v, want the raw bytes", audio)
 		}
+		if mt, _ := waitForStored(t, up, "binaryType", 3*time.Second).(int); mt != websocket.BinaryMessage {
+			t.Errorf("upstream frame type = %d, want binary", mt)
+		}
 	})
 
 	t.Run("upstream closed leaves the client socket open", func(t *testing.T) {
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = sendJSON(conn, dgResults("halo dunia.", true,
 				dgWord("halo", "Halo", 0, 0.4), dgWord("dunia", "dunia.", 0.44, 0.9)))
 			// returning closes the upstream socket
@@ -277,10 +278,10 @@ func TestCaptionSessionDeepgram(t *testing.T) {
 	})
 
 	t.Run("usage records one prompt token per committed word exactly once", func(t *testing.T) {
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = sendJSON(conn, dgResults("halo dunia.", true,
 				dgWord("halo", "Halo", 0, 0.4), dgWord("dunia", "dunia.", 0.44, 0.9)))
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		h, _, conn := newDeepgramSession(t, script, "model=dg/nova-3")
 

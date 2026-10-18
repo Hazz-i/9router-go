@@ -52,11 +52,16 @@ func addConnection(t *testing.T, repo *db.Repo, id, provider, dataJSON string) {
 }
 
 // serveHandler mounts h.HandleWS on an httptest server and returns the
-// websocket URL of the caption path.
+// websocket URL of the caption path. Its cleanups drain the handler's
+// sessions BEFORE the db handle closes: registered after srv.Close, and
+// after the client close dialClient registers, so closing the client ends
+// the session, waitSessions joins it (usage row written), then the server
+// and repo close.
 func serveHandler(t *testing.T, h *Handler) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
 	t.Cleanup(srv.Close)
+	t.Cleanup(h.waitSessions)
 	return "ws" + strings.TrimPrefix(srv.URL, "http")
 }
 
@@ -139,15 +144,20 @@ func asClose(err error, target **websocket.CloseError) bool {
 }
 
 // fakeUpstream is a fake provider WebSocket: it records the upgrade request
-// and lets a test script drive frames.
+// and lets a test script drive frames. The script receives the fake as a
+// parameter: the fake is fully built before httptest.NewServer starts Serve,
+// so the server goroutine reads it through that goroutine-start edge — a
+// closure capturing a variable assigned after dial would race under -race
+// (dial/accept syscalls create no happens-before edge).
 type fakeUpstream struct {
 	srv    *httptest.Server
-	script func(conn *websocket.Conn)
+	script func(f *fakeUpstream, conn *websocket.Conn)
 
 	mu      sync.Mutex
 	query   url.Values
 	headers http.Header
 	rec     map[string]any
+	updated chan struct{} // closed (and replaced) on every state change: broadcast wakeup for the test's waits
 }
 
 func (f *fakeUpstream) wsURL() string {
@@ -166,7 +176,8 @@ func (f *fakeUpstream) upgradeHeader(key string) string {
 	return f.headers.Get(key)
 }
 
-// store records a decoded frame or detail for the test to assert later.
+// store records a decoded frame or detail for the test to assert later and
+// broadcasts the change so a waiting test goroutine wakes immediately.
 func (f *fakeUpstream) store(key string, v any) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -174,6 +185,8 @@ func (f *fakeUpstream) store(key string, v any) {
 		f.rec = map[string]any{}
 	}
 	f.rec[key] = v
+	close(f.updated)
+	f.updated = make(chan struct{})
 }
 
 // recorded returns the stored value for key, or nil.
@@ -183,32 +196,45 @@ func (f *fakeUpstream) recorded(key string) any {
 	return f.rec[key]
 }
 
-// waitForUpgrade polls until the fake upstream has recorded its upgrade
-// (the gateway dials asynchronously after `connected`).
+// waitForUpgrade waits on the fake's change channel until the upgrade request
+// has been recorded (the gateway dials asynchronously after `connected`).
 func waitForUpgrade(t *testing.T, f *fakeUpstream) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if f.upgradeQuery() != nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("upstream was never dialed")
+	f.waitFor(t, 3*time.Second, "upstream was never dialed", func() bool {
+		return f.upgradeQuery() != nil
+	})
 }
 
-// waitForStored polls until key is recorded or the deadline passes.
+// waitForStored waits on the fake's change channel until key is recorded.
+// Waiting (and any failure report) happens on the test goroutine; the fake's
+// server goroutine only records.
 func waitForStored(t *testing.T, f *fakeUpstream, key string, d time.Duration) any {
+	f.waitFor(t, d, fmt.Sprintf("upstream never recorded %q", key), func() bool {
+		return f.recorded(key) != nil
+	})
+	return f.recorded(key)
+}
+
+// waitFor blocks until cond becomes true, waking on the fake's broadcast
+// channel rather than by polling, with a bounded deadline. It runs — and
+// fails — on the test goroutine only.
+func (f *fakeUpstream) waitFor(t *testing.T, d time.Duration, msg string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if v := f.recorded(key); v != nil {
-			return v
+	deadline := time.NewTimer(d)
+	defer deadline.Stop()
+	for {
+		f.mu.Lock() // snapshot state + broadcast channel together: no lost wakeup
+		updated := f.updated
+		f.mu.Unlock()
+		if cond() {
+			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-updated:
+		case <-deadline.C:
+			t.Fatal(msg)
+		}
 	}
-	t.Fatalf("upstream never recorded %q", key)
-	return nil
 }
 
 // sendJSON writes one text frame to the gateway from the fake script.
@@ -216,9 +242,9 @@ func sendJSON(conn *websocket.Conn, v any) error {
 	return conn.WriteJSON(v)
 }
 
-func newFakeUpstream(t *testing.T, script func(conn *websocket.Conn)) *fakeUpstream {
+func newFakeUpstream(t *testing.T, script func(f *fakeUpstream, conn *websocket.Conn)) *fakeUpstream {
 	t.Helper()
-	f := &fakeUpstream{script: script}
+	f := &fakeUpstream{script: script, updated: make(chan struct{})}
 	upgrader := websocket.Upgrader{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Record before Upgrade: the gateway's dial returns the moment the
@@ -226,13 +252,17 @@ func newFakeUpstream(t *testing.T, script func(conn *websocket.Conn)) *fakeUpstr
 		f.mu.Lock()
 		f.query = r.URL.Query()
 		f.headers = r.Header.Clone()
+		close(f.updated)
+		f.updated = make(chan struct{})
 		f.mu.Unlock()
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
 		defer conn.Close()
-		script(conn)
+		if script != nil {
+			script(f, conn)
+		}
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -240,7 +270,7 @@ func newFakeUpstream(t *testing.T, script func(conn *websocket.Conn)) *fakeUpstr
 
 // idleScript reads until the socket dies, as an upstream that only receives
 // audio would.
-func idleScript(conn *websocket.Conn) {
+func idleScript(_ *fakeUpstream, conn *websocket.Conn) {
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			return

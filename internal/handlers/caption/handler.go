@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"9router/proxy/internal/db"
@@ -47,6 +48,10 @@ type Handler struct {
 	upgrader websocket.Upgrader
 	dial     websocket.Dialer
 	http     *http.Client
+
+	// wg counts live sessions. waitSessions drains it so test teardown (and
+	// any future shutdown path) never closes the repo under a session.
+	wg sync.WaitGroup
 }
 
 // NewHandler builds the caption handler over the shared repo.
@@ -93,8 +98,14 @@ func (h *Handler) HandleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return // Upgrade already wrote the handshake error
 	}
+	h.wg.Add(1)
+	defer h.wg.Done()
 	h.runSession(conn, urlValues(r.URL.Query()), clientKey)
 }
+
+// waitSessions blocks until every session started through this handler has
+// fully torn down (usage row written, goroutines joined).
+func (h *Handler) waitSessions() { h.wg.Wait() }
 
 // HandleUpgradeRequired serves POST on the caption paths: the endpoint speaks
 // WebSocket only, so a plain POST is answered with 426 and the upgrade hint.

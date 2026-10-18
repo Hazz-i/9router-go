@@ -45,12 +45,12 @@ func TestCaptionFailureShapes(t *testing.T) {
 
 func TestCaptionGetSubtitles(t *testing.T) {
 	t.Run("get_subtitles round-trips the committed words", func(t *testing.T) {
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = sendJSON(conn, dgResults("halo dunia satu", true,
 				dgWord("halo", "Halo", 0, 0.5),
 				dgWord("dunia", "dunia", 0.55, 1.0),
 				dgWord("satu", "satu", 1.05, 1.5)))
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		_, _, conn := newDeepgramSession(t, script, "model=dg/nova-3")
 
@@ -82,10 +82,10 @@ func TestCaptionGetSubtitles(t *testing.T) {
 	})
 
 	t.Run("get_subtitles with no format defaults to all", func(t *testing.T) {
-		script := func(conn *websocket.Conn) {
+		script := func(f *fakeUpstream, conn *websocket.Conn) {
 			_ = sendJSON(conn, dgResults("halo dunia", true,
 				dgWord("halo", "Halo", 0, 0.5), dgWord("dunia", "dunia", 0.55, 1.0)))
-			idleScript(conn)
+			idleScript(f, conn)
 		}
 		_, _, conn := newDeepgramSession(t, script, "model=dg/nova-3")
 

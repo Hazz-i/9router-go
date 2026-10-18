@@ -62,7 +62,7 @@ func (s *session) setupElevenLabs() error {
 		})
 	}
 
-	go s.pumpElevenLabs()
+	s.spawn(s.pumpElevenLabs)
 	return nil
 }
 

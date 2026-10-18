@@ -56,7 +56,7 @@ func (s *session) setupDeepgram() error {
 	s.finalize = func() { s.sendUpstream(map[string]any{"type": "Finalize"}) }
 	s.forward = func(data []byte) { s.forwardBinary(websocket.BinaryMessage, data) }
 
-	go s.pumpDeepgram()
+	s.spawn(s.pumpDeepgram)
 	return nil
 }
 

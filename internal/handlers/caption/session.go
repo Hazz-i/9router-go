@@ -47,6 +47,11 @@ type session struct {
 
 	writeMu sync.Mutex // serializes gateway→client frames (two reader goroutines)
 
+	// wg tracks every goroutine the session spawns (upstream read pumps).
+	// cleanup joins them, so nothing outlives the repo the usage row is
+	// written against or the client socket the handler closes on return.
+	wg sync.WaitGroup
+
 	// Backend seams, filled in by the dispatched setup function.
 	forward   func([]byte) // client binary → upstream
 	finalize  func()       // client {type:"finalize"}
@@ -291,9 +296,20 @@ func (s *session) appendWord(w Word) {
 	}{"word", w})
 }
 
+// spawn runs fn on a tracked goroutine so cleanup can join it before the
+// handler returns.
+func (s *session) spawn(fn func()) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		fn()
+	}()
+}
+
 // cleanup runs once when the client read loop ends: it cancels the session
-// context (which unblocks every goroutine), closes the upstream, and records
-// one usage row with one prompt token per committed word.
+// context (which unblocks every goroutine), closes the upstream, records one
+// usage row, and joins the spawned goroutines — the usage row is written
+// before the join so no session goroutine can outlive the caller's close.
 func (s *session) cleanup() {
 	s.cancel()
 	s.upMu.Lock()
@@ -320,6 +336,8 @@ func (s *session) cleanup() {
 		captionEndpoint, count, 0, 0, "success", count, meta, tokensJSON, s.clientK); err != nil {
 		log.Error("caption", "usage insert failed", "error", err)
 	}
+
+	s.wg.Wait()
 }
 
 // hasCredential reports whether a connection carries a usable credential.
