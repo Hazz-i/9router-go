@@ -23,7 +23,7 @@ func (s *session) setupDeepgram() error {
 		key = s.connData.AccessToken
 	}
 	if key == "" {
-		return errors.New("Missing Deepgram API key")
+		return errors.New("Missing Deepgram API key") //nolint:staticcheck // this text is the frame payload a client receives; it is ported verbatim from upstream.
 	}
 
 	params := url.Values{

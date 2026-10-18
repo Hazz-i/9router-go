@@ -74,7 +74,11 @@ func (h *Handler) HandleWS(w http.ResponseWriter, r *http.Request) {
 		// Upgrade already wrote the HTTP error response.
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Warn("REALTIME_VOICE", "client websocket close failed", "error", err)
+		}
+	}()
 	h.wg.Add(1)
 	defer h.wg.Done()
 	h.serveSession(conn, r)
@@ -84,13 +88,13 @@ func (h *Handler) HandleWS(w http.ResponseWriter, r *http.Request) {
 // OpenAI-compatible realtime protocol the gateway speaks.
 func (h *Handler) serveInfo(w http.ResponseWriter) {
 	body := map[string]any{
-		"status":         "ready",
-		"protocol":       "websocket",
-		"message":        "Connect to this endpoint using WebSocket (ws:// or wss://) for bidirectional realtime voice conversation.",
-		"endpoint":       "/v1/realtime",
-		"protocolFormat": "OpenAI Realtime API compatible",
-		"backend":        "Google Gemini Multimodal Live API",
-		"defaultModel":   "gemini-3.8-live",
+		"status":          "ready",
+		"protocol":        "websocket",
+		"message":         "Connect to this endpoint using WebSocket (ws:// or wss://) for bidirectional realtime voice conversation.",
+		"endpoint":        "/v1/realtime",
+		"protocolFormat":  "OpenAI Realtime API compatible",
+		"backend":         "Google Gemini Multimodal Live API",
+		"defaultModel":    "gemini-3.8-live",
 		"supportedVoices": []string{"Puck", "Charon", "Kore", "Fenrir", "Aoede"},
 		"queryParameters": map[string]any{
 			"model":  "Model ID (default: gemini/gemini-3.8-live)",
@@ -234,7 +238,8 @@ func (h *Handler) serveSession(conn *websocket.Conn, r *http.Request) {
 func createRealtimeAdapter(providerID string, c *adapterCtx) (Adapter, error) {
 	factory, ok := realtimeAdapters[providerID]
 	if !ok {
-		return nil, fmt.Errorf("Provider %q does not support realtime voice", providerID)
+		// Client-visible: ported verbatim from upstream (error frame message + 4400 close reason).
+		return nil, fmt.Errorf("Provider %q does not support realtime voice", providerID) //nolint:staticcheck // this text is the frame payload a client receives; it is ported verbatim from upstream.
 	}
 	return factory(c)
 }

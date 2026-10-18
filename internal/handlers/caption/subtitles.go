@@ -190,8 +190,8 @@ func ChunksToAss(chunks []Chunk) string {
 	var b strings.Builder
 	b.WriteString(assHeader)
 	for _, c := range chunks {
-		b.WriteString(fmt.Sprintf("Dialogue: 0,%s,%s,Default,,0,0,0,,%s\n",
-			FormatTimeAss(c.Start), FormatTimeAss(c.End), karaokeText(c)))
+		fmt.Fprintf(&b, "Dialogue: 0,%s,%s,Default,,0,0,0,,%s\n",
+			FormatTimeAss(c.Start), FormatTimeAss(c.End), karaokeText(c))
 	}
 	return b.String()
 }

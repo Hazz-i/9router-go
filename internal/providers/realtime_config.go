@@ -74,7 +74,7 @@ func (s *RealtimeChoiceSet) Resolve(kind, raw string) (map[string]any, error) {
 	if strings.HasPrefix(id, "custom:") {
 		rawID := strings.TrimPrefix(id, "custom:")
 		if rawID == "" {
-			return nil, fmt.Errorf("Missing custom %s id for provider \"%s\" (use %s/custom:<id>).", kind, prov, prov)
+			return nil, fmt.Errorf("Missing custom %s id for provider \"%s\" (use %s/custom:<id>).", kind, prov, prov) //nolint:staticcheck // this text is the frame payload a client receives; it is ported verbatim from upstream.
 		}
 		if group.CustomVoice != nil {
 			sub, ok := substituteCustomID(group.CustomVoice, rawID).(map[string]any)
@@ -117,7 +117,7 @@ func (s *RealtimeChoiceSet) unknownChoiceError(kind, raw string) error {
 			opts = append(opts, g.Type+"/"+c.ID)
 		}
 	}
-	return fmt.Errorf("Unknown realtime %s choice \"%s\". Valid options: %s", kind, raw, strings.Join(opts, ", "))
+	return fmt.Errorf("Unknown realtime %s choice \"%s\". Valid options: %s", kind, raw, strings.Join(opts, ", ")) //nolint:staticcheck // this text is the frame payload a client receives; it is ported verbatim from upstream.
 }
 
 // substituteCustomID replaces every string equal to "@id" with rawID in a fresh

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1036,18 +1037,19 @@ func ProbeWebSocketModel(ctx context.Context, gatewayURL, model, kind, apiKey st
 	if dialErr != nil {
 		return WSProbeResult{LatencyMs: latency(), Error: truncateProbeMessage(dialErr.Error())}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Read text frames until the success frame, an error frame, or the
 	// timeout. One deadline covers both the dial and every frame read.
-	conn.SetReadDeadline(deadlineFrom(ctx))
+	_ = conn.SetReadDeadline(deadlineFrom(ctx))
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			// gorilla surfaces a close handshake the server initiated through
 			// the CloseError's code; anything else is a timeout or transport
 			// drop and carries its own message.
-			if closeErr, ok := err.(*websocket.CloseError); ok {
+			var closeErr *websocket.CloseError
+			if errors.As(err, &closeErr) {
 				return WSProbeResult{LatencyMs: latency(), Error: truncateProbeMessage(fmt.Sprintf("WebSocket closed (code %d) before %s", closeErr.Code, okType))}
 			}
 			if ctx.Err() != nil {

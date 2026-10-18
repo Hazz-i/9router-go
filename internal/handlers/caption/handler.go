@@ -159,11 +159,5 @@ func closeWith(conn *websocket.Conn, code int, reason string) {
 	_ = conn.Close()
 }
 
-// errAndClose sends one error text frame then the close frame.
-func errAndClose(conn *websocket.Conn, code int, reason, message string) {
-	_ = conn.WriteJSON(map[string]any{"type": "error", "error": message})
-	closeWith(conn, code, reason)
-}
-
 // maskKey is the persistence-safe form of a key for the usage row.
 func maskKey(key string) string { return handlerutil.MaskAPIKey(key) }

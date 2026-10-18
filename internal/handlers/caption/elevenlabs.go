@@ -25,7 +25,7 @@ func (s *session) setupElevenLabs() error {
 		key = s.connData.AccessToken
 	}
 	if key == "" {
-		return errors.New("Missing ElevenLabs API key")
+		return errors.New("Missing ElevenLabs API key") //nolint:staticcheck // this text is the frame payload a client receives; it is ported verbatim from upstream.
 	}
 
 	sampleRate := s.sampleRate

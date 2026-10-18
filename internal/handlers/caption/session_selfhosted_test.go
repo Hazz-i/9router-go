@@ -113,7 +113,6 @@ type fakeREST struct {
 	lastReq  *http.Request
 	fields   map[string]string
 	audio    []byte
-	auth     string
 }
 
 func (f *fakeREST) Requests() int {

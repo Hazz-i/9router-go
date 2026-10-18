@@ -36,7 +36,7 @@ func (s *session) setupGemini() error {
 		key = s.connData.AccessToken
 	}
 	if key == "" {
-		return errors.New("Missing Gemini API key")
+		return errors.New("Missing Gemini API key") //nolint:staticcheck // this text is the frame payload a client receives; it is ported verbatim from upstream.
 	}
 
 	wsURL := s.h.geminiURL + "?key=" + url.QueryEscape(key)
@@ -73,7 +73,7 @@ func geminiSetup(model, language string) map[string]any {
 		instruction = fmt.Sprintf("Transcribe the spoken audio verbatim in language %s.", language)
 	}
 	return map[string]any{
-		"model":            "models/" + model,
+		"model": "models/" + model,
 		"generationConfig": map[string]any{
 			"responseModalities": []string{"AUDIO"},
 			"speechConfig": map[string]any{
@@ -150,7 +150,7 @@ func (s *session) geminiMessage(data []byte, currentStart float64) float64 {
 
 // geminiFrame is the subset of a Gemini Live frame this session uses.
 type geminiFrame struct {
-	Error          *struct {
+	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 	ServerContent *struct {

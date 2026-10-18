@@ -82,7 +82,6 @@ func (c *adapterCtx) overrideURL() string {
 func (c *adapterCtx) sendClient(v any)               { c.sess.sendClient(v) }
 func (c *adapterCtx) closeClient(code int, r string) { c.sess.closeClient(code, r) }
 func (c *adapterCtx) isClientOpen() bool             { return !c.sess.isClosed() }
-func (c *adapterCtx) countInput(n int)               { c.sess.countInput(n) }
 func (c *adapterCtx) countOutput(n int)              { c.sess.countOutput(n) }
 func (c *adapterCtx) setOutputRate(r int)            { c.sess.setOutputRate(r) }
 func (c *adapterCtx) millisSinceStart() int64 {

@@ -18,13 +18,13 @@ func sendClientError(c *adapterCtx, message string) {
 // empty (Deepgram carries no voice).
 func sendSessionCreated(c *adapterCtx, sessionID, model, voice string) {
 	session := map[string]any{
-		"id":                   sessionID,
-		"object":               "realtime.session",
-		"model":                model,
-		"modalities":           []string{"audio", "text"},
-		"turn_detection":       map[string]any{"type": "server_vad"},
-		"input_audio_format":   "pcm16",
-		"output_audio_format":  "pcm16",
+		"id":                  sessionID,
+		"object":              "realtime.session",
+		"model":               model,
+		"modalities":          []string{"audio", "text"},
+		"turn_detection":      map[string]any{"type": "server_vad"},
+		"input_audio_format":  "pcm16",
+		"output_audio_format": "pcm16",
 	}
 	if voice != "" {
 		session["voice"] = voice

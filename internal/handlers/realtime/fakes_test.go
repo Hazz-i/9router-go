@@ -300,16 +300,6 @@ func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool)
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// canonicalJSON re-encodes a JSON string with sorted keys for comparisons.
-func canonicalJSON(t *testing.T, raw string) string {
-	t.Helper()
-	b, err := json.Marshal(unmarshalFrame(t, []byte(raw)))
-	if err != nil {
-		t.Fatalf("re-marshal frame: %v", err)
-	}
-	return string(b)
-}
-
 // deepEqual compares two decoded frames structurally; "" means equal.
 func deepEqual(got, want map[string]any) string {
 	if reflect.DeepEqual(got, want) {

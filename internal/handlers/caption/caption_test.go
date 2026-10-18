@@ -5,6 +5,7 @@ package caption
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -134,11 +135,7 @@ func expectCloseError(t *testing.T, conn *websocket.Conn, wantCode int) {
 }
 
 func asClose(err error, target **websocket.CloseError) bool {
-	if ce, ok := err.(*websocket.CloseError); ok {
-		*target = ce
-		return true
-	}
-	return false
+	return errors.As(err, target)
 }
 
 // fakeUpstream is a fake provider WebSocket: it records the upgrade request
@@ -147,10 +144,10 @@ type fakeUpstream struct {
 	srv    *httptest.Server
 	script func(conn *websocket.Conn)
 
-	mu     sync.Mutex
-	query  url.Values
+	mu      sync.Mutex
+	query   url.Values
 	headers http.Header
-	rec    map[string]any
+	rec     map[string]any
 }
 
 func (f *fakeUpstream) wsURL() string {

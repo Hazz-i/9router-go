@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/handlers/shared"
+	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
@@ -64,7 +64,7 @@ func (h *Handler) runSession(conn *websocket.Conn, q urlValues, clientKey *model
 	if clientKey != nil {
 		s.clientK = maskKey(clientKey.Key)
 	}
-	defer s.client.Close()
+	defer func() { _ = s.client.Close() }()
 
 	modelParam := q.get("model", "dg/nova-3")
 	s.language = q.get("language", q.get("lang", "id"))

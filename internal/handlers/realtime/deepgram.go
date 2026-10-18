@@ -20,8 +20,11 @@ import (
 const defaultDeepgramWsURL = "wss://agent.deepgram.com/v1/agent/converse"
 
 type deepgramAdapter struct {
-	c           *adapterCtx
-	up          *upstreamSocket
+	c *adapterCtx
+	// up is published through an atomic pointer: Connect runs on the dial
+	// goroutine while the client read loop may already be sending audio, and
+	// the pre-connect nil must be observable without a data race.
+	up          atomic.Pointer[upstreamSocket]
 	ready       atomic.Bool
 	keepAliveMs int
 
@@ -176,9 +179,9 @@ func (d *deepgramAdapter) Connect() error {
 	if err != nil {
 		return err
 	}
-	d.up = &upstreamSocket{conn: wsConn}
+	d.up.Store(&upstreamSocket{conn: wsConn})
 	// Settings is the FIRST upstream frame — it must not race the client audio.
-	if err := d.up.sendJSON(d.buildSettings()); err != nil {
+	if err := d.up.Load().sendJSON(d.buildSettings()); err != nil {
 		return err
 	}
 	d.startKeepAlive()
@@ -203,8 +206,8 @@ func (d *deepgramAdapter) startKeepAlive() {
 			case <-d.c.sess.ctx.Done():
 				return
 			case <-ticker.C:
-				if d.up.isOpen() {
-					_ = d.up.sendJSON(map[string]any{"type": "KeepAlive"})
+				if up := d.up.Load(); up.isOpen() {
+					_ = up.sendJSON(map[string]any{"type": "KeepAlive"})
 				}
 			}
 		}
@@ -295,20 +298,22 @@ func (d *deepgramAdapter) HandleClientEvent(event map[string]any) {
 			sendSessionUpdated(d.c, d.sessionID, d.c.model, "")
 		}
 	case "input_audio_buffer.append":
-		if audio, _ := event["audio"].(string); audio != "" && d.up.isOpen() {
-			if b, err := base64.StdEncoding.DecodeString(audio); err == nil {
-				_ = d.up.sendBinary(b)
+		if audio, _ := event["audio"].(string); audio != "" {
+			if up := d.up.Load(); up.isOpen() {
+				if b, err := base64.StdEncoding.DecodeString(audio); err == nil {
+					_ = up.sendBinary(b)
+				}
 			}
 		}
 	}
 }
 
 func (d *deepgramAdapter) HandleClientAudio(data []byte) {
-	if d.up.isOpen() {
-		_ = d.up.sendBinary(data)
+	if up := d.up.Load(); up.isOpen() {
+		_ = up.sendBinary(data)
 	}
 }
 
 func (d *deepgramAdapter) Close() {
-	d.up.close(1000, "Client closed")
+	d.up.Load().close(1000, "Client closed")
 }

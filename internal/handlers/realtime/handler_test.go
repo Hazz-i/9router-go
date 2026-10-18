@@ -295,5 +295,8 @@ func queryUsageRow(t *testing.T, database *sql.DB) db.UsageHistoryRow {
 			t.Fatalf("scan usage row: %v", err)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate usage rows: %v", err)
+	}
 	return row
 }

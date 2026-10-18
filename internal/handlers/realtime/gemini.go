@@ -48,20 +48,23 @@ func formatGeminiModel(modelName string) string {
 }
 
 type geminiAdapter struct {
-	c         *adapterCtx
-	dialURL   string
-	up        *upstreamSocket
+	c       *adapterCtx
+	dialURL string
+	// up is published through an atomic pointer: Connect runs on the dial
+	// goroutine while the client read loop may already be sending events, and
+	// the pre-connect nil must be observable without a data race.
+	up        atomic.Pointer[upstreamSocket]
 	setupSent atomic.Bool
 
 	// mu guards the mutable setup state: voice/instructions are updated from
 	// the client read loop while the setup frame may be sent from the
 	// upstream-open moment or the client read loop itself.
-	mu              sync.Mutex
-	activeVoice     string
-	activeInstr     string
-	sessionID       string
-	responseID      string
-	itemID          string
+	mu          sync.Mutex
+	activeVoice string
+	activeInstr string
+	sessionID   string
+	responseID  string
+	itemID      string
 }
 
 func newGeminiAdapter(c *adapterCtx) (Adapter, error) {
@@ -92,11 +95,11 @@ func newGeminiAdapter(c *adapterCtx) (Adapter, error) {
 }
 
 func (g *geminiAdapter) Connect() error {
-	wsConn, _, err := realtimeDialer.DialContext(g.c.sess.ctx, g.dialURL, nil)
+	wsConn, _, err := realtimeDialer.DialContext(g.c.sess.ctx, g.dialURL, nil) //nolint:bodyclose // gorilla: on success the handshake body IS the socket, on failure it need not be closed.
 	if err != nil {
 		return err
 	}
-	g.up = &upstreamSocket{conn: wsConn}
+	g.up.Store(&upstreamSocket{conn: wsConn})
 	g.sendSetup()
 	g.startSilenceHeartbeat()
 	g.c.sess.wg.Add(1)
@@ -111,7 +114,8 @@ func (g *geminiAdapter) Connect() error {
 // upstream opens, or lazily before the first audio / on a pre-open
 // session.update.
 func (g *geminiAdapter) sendSetup() {
-	if !g.up.isOpen() || !g.setupSent.CompareAndSwap(false, true) {
+	up := g.up.Load()
+	if !up.isOpen() || !g.setupSent.CompareAndSwap(false, true) {
 		return
 	}
 
@@ -137,7 +141,7 @@ func (g *geminiAdapter) sendSetup() {
 			"outputAudioTranscription": map[string]any{},
 		},
 	}
-	if err := g.up.sendJSON(frame); err != nil {
+	if err := up.sendJSON(frame); err != nil {
 		log.Warn("REALTIME_VOICE", "gemini setup send failed", "error", err)
 	}
 }
@@ -146,8 +150,8 @@ func (g *geminiAdapter) forwardAudio(b64 string) {
 	if !g.setupSent.Load() {
 		g.sendSetup()
 	}
-	if g.up.isOpen() {
-		_ = g.up.sendJSON(map[string]any{
+	if up := g.up.Load(); up.isOpen() {
+		_ = up.sendJSON(map[string]any{
 			"realtimeInput": map[string]any{
 				"audio": map[string]any{"mimeType": "audio/pcm;rate=16000", "data": b64},
 			},
@@ -156,8 +160,8 @@ func (g *geminiAdapter) forwardAudio(b64 string) {
 }
 
 func (g *geminiAdapter) sendClientContent(parts []any) {
-	if g.up.isOpen() {
-		_ = g.up.sendJSON(map[string]any{
+	if up := g.up.Load(); up.isOpen() {
+		_ = up.sendJSON(map[string]any{
 			"clientContent": map[string]any{"turns": []any{map[string]any{"role": "user", "parts": parts}}, "turnComplete": true},
 		})
 	}
@@ -177,8 +181,8 @@ func (g *geminiAdapter) startSilenceHeartbeat() {
 			case <-g.c.sess.ctx.Done():
 				return
 			case <-ticker.C:
-				if g.setupSent.Load() && g.up.isOpen() {
-					_ = g.up.sendJSON(map[string]any{
+				if up := g.up.Load(); g.setupSent.Load() && up.isOpen() {
+					_ = up.sendJSON(map[string]any{
 						"realtimeInput": map[string]any{
 							"audio": map[string]any{"mimeType": "audio/pcm;rate=16000", "data": silenceFrameB64},
 						},
@@ -352,7 +356,7 @@ func (g *geminiAdapter) HandleClientAudio(data []byte) {
 }
 
 func (g *geminiAdapter) Close() {
-	g.up.close(1000, "Client closed")
+	g.up.Load().close(1000, "Client closed")
 }
 
 func eventType(event map[string]any) string {

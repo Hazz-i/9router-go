@@ -91,7 +91,7 @@ func (s *session) postSelfhosted(body []byte, contentType string) {
 		}
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		log.Error("caption", "self-hosted STT flush error", "status", strconv.Itoa(resp.StatusCode))
 		return
