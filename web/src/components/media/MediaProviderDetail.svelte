@@ -13,6 +13,15 @@
   import TtsExampleCard from './TtsExampleCard.svelte'
   import SttExampleCard from './SttExampleCard.svelte'
   import LiveCaptionExampleCard from './LiveCaptionExampleCard.svelte'
+  import RealtimeVoiceExampleCard from './RealtimeVoiceExampleCard.svelte'
+
+  interface RealtimeVoiceConfig {
+    defaultModel?: string
+    supportedVoices?: string[]
+    think?: { provider?: { type: string; model: string }; providers?: Array<{ type: string; name?: string; models?: Array<{ id: string; name?: string }> }> }
+    speak?: { provider?: { type: string; model: string }; providers?: Array<{ type: string; name?: string; customVoice?: string; voices?: Array<{ id: string; name?: string }> }> }
+    listen?: { provider?: { type: string; model: string }; providers?: Array<{ type: string; name?: string; models?: Array<{ id: string; name?: string }> }> }
+  }
 
   interface Props {
     provider: ProviderCatalogItem
@@ -40,6 +49,7 @@
     tts: 'Text To Speech',
     stt: 'Speech To Text',
     liveCaption: 'Live Caption',
+    realtime: 'Realtime Voice',
     image: 'Text to Image',
     systemone: 'System One',
     webSearch: 'Web Search',
@@ -52,6 +62,7 @@
     tts: '/dashboard/media-providers/tts',
     stt: '/dashboard/media-providers/stt',
     liveCaption: '/dashboard/media-providers/liveCaption',
+    realtime: '/dashboard/media-providers/realtime',
     image: '/dashboard/media-providers/image',
     systemone: '/dashboard/media-providers/systemone',
     webSearch: '/dashboard/media-providers/web',
@@ -929,6 +940,13 @@
     {#if provider.liveCaptionConfig}
       <LiveCaptionExampleCard providerId={provider.id} providerAlias={provider.alias || provider.id} capability={provider.liveCaptionConfig} {apiKeys} />
     {/if}
+  {:else if kind === 'realtime'}
+    <RealtimeVoiceExampleCard
+      providerId={provider.id}
+      providerAlias={provider.alias || provider.id}
+      realtimeConfig={(provider as ProviderCatalogItem & { realtimeConfig?: RealtimeVoiceConfig }).realtimeConfig}
+      {apiKeys}
+    />
   {:else}
     <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
     <h2 class="text-lg font-semibold text-text-main mb-4">Example</h2>

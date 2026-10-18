@@ -17,6 +17,7 @@ export type ActiveTab =
   | 'media-tts'
   | 'media-stt'
   | 'media-live-caption'
+  | 'media-realtime'
   | 'media-video'
   | 'media-systemone'
   | 'media-web'
@@ -45,6 +46,7 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   'media-tts': '/dashboard/media-providers/tts',
   'media-stt': '/dashboard/media-providers/stt',
   'media-live-caption': '/dashboard/media-providers/liveCaption',
+  'media-realtime': '/dashboard/media-providers/realtime',
   'media-video': '/dashboard/media-providers/video',
   'media-systemone': '/dashboard/media-providers/systemone',
   'media-web': '/dashboard/media-providers/web',
@@ -135,6 +137,10 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   '/dashboard/media-providers/livecaption': 'media-live-caption',
   '/media-providers/livecaption': 'media-live-caption',
   '/media/livecaption': 'media-live-caption',
+
+  '/dashboard/media-providers/realtime': 'media-realtime',
+  '/media-providers/realtime': 'media-realtime',
+  '/media/realtime': 'media-realtime',
 
   '/dashboard/media-providers/video': 'media-video',
   '/media-providers/video': 'media-video',

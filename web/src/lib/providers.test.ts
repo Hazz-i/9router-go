@@ -10,7 +10,6 @@ import {
 } from './providers'
 import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from './models'
 import { pathToTab, TAB_ROUTES } from './router'
-
 describe('providers & media separation', () => {
   it('correctly classifies chat vs pure media providers', () => {
     const openai = PROVIDER_CATALOG.find((p) => p.id === 'openai')
@@ -205,5 +204,51 @@ describe('providers & media separation', () => {
       (p) => !shared.has(p.id) && !assets.has(`${p.id}.png`) && !assets.has(`${p.id}.svg`)
     ).map((p) => p.id)
     assert.deepStrictEqual(missing, [], `providers without artwork: ${missing.join(', ')}`)
+  })
+})
+
+describe('realtime voice catalog (upstream parity)', () => {
+  it('lists exactly the providers declaring the realtime kind', () => {
+    const providers = getProvidersByKind('realtime')
+    assert.deepStrictEqual(providers.map((p) => p.id).sort(), ['deepgram', 'gemini'])
+    assert.ok(providers.every((p) => p.serviceKinds?.includes('realtime')))
+  })
+
+  it('lists liveCaption providers by declared kind, not by liveCaptionConfig presence', () => {
+    const synthetic = {
+      id: 'synthetic-lc',
+      name: 'Synthetic LC',
+      category: 'apikey' as const,
+      alias: 'synthetic-lc',
+      color: '#000000',
+      icon: 'mic',
+      serviceKinds: ['liveCaption'],
+    }
+    PROVIDER_CATALOG.push(synthetic)
+    try {
+      const providers = getProvidersByKind('liveCaption')
+      assert.ok(providers.some((p) => p.id === 'synthetic-lc'), 'kind without config must still be listed')
+      assert.ok(providers.some((p) => p.id === 'deepgram'), 'deepgram stays listed')
+    } finally {
+      PROVIDER_CATALOG.pop()
+    }
+  })
+
+  it('carries upstream realtimeConfig defaults', () => {
+    const gemini = PROVIDER_CATALOG.find((p) => p.id === 'gemini')
+    const deepgram = PROVIDER_CATALOG.find((p) => p.id === 'deepgram')
+    assert.strictEqual(gemini?.realtimeConfig?.defaultModel, 'gemini-3.8-live')
+    assert.strictEqual(deepgram?.realtimeConfig?.defaultModel, 'voice-agent')
+  })
+
+  it('keeps deepgram option-group fallbacks and flux v2 settings pairs', () => {
+    const cfg = PROVIDER_CATALOG.find((p) => p.id === 'deepgram')?.realtimeConfig
+    assert.deepStrictEqual(cfg?.listen?.provider, { type: 'deepgram', model: 'nova-3' })
+    assert.deepStrictEqual(cfg?.speak?.provider, { type: 'deepgram', model: 'aura-2-thalia-en' })
+    for (const id of ['flux-general-en', 'flux-general-multi']) {
+      const entry = cfg?.listen?.providers?.[0].models?.find((m) => m.id === id)
+      assert.ok(entry, `${id} missing from deepgram listen group`)
+      assert.deepStrictEqual(entry.settings?.provider?.version, 'v2')
+    }
   })
 })

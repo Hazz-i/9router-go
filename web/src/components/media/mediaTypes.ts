@@ -1,6 +1,6 @@
 import type { ProviderConnection } from '../../api/client'
 
-export type MediaKind = 'embedding' | 'image' | 'tts' | 'stt' | 'liveCaption' | 'video' | 'systemone' | 'webSearch' | 'webFetch'
+export type MediaKind = 'embedding' | 'image' | 'tts' | 'stt' | 'liveCaption' | 'realtime' | 'video' | 'systemone' | 'webSearch' | 'webFetch'
 
 export interface MediaKindInfo {
   kind: MediaKind
@@ -45,6 +45,13 @@ export const MEDIA_KIND_INFO: Record<MediaKind, MediaKindInfo> = {
     singular: 'Live Caption',
     description: 'Real-time microphone transcription with live subtitles.',
     emptyMessage: 'No live-caption providers found.',
+  },
+  realtime: {
+    kind: 'realtime',
+    title: 'Realtime Voice Providers',
+    singular: 'Realtime Voice',
+    description: 'Bidirectional live voice conversations over WebSocket.',
+    emptyMessage: 'No realtime voice providers found.',
   },
   video: {
     kind: 'video',
