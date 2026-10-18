@@ -479,6 +479,60 @@ jobs:
           }
           go version -m /tmp/from-image | grep -- '-pgo='
 
+  # Branch builds are also published, so the image can be pulled from GHCR
+  # instead of rebuilt locally. Deliberately a separate job: a required status
+  # check is matched by its job name, so renaming `docker` to cover publishing
+  # could leave a required check that can never report. The image is identical
+  # to the one `docker` asserts — same Dockerfile, same commit — so that job
+  # stays the one that validates the build, and this one only publishes it.
+  # `pull_request` from a fork gets a read-only token, hence the head-repo guard.
+  docker-publish:
+    name: Publish Docker image (GHCR)
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Compute image name and tag
+        id: image
+        # Passed through the environment: a branch name is attacker-controlled,
+        # and interpolating it into the script would let a branch called
+        # `"; curl … | sh` run its own command on the runner.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          REF: ${{ github.ref_name }}
+        run: |
+          # A Docker reference is lowercase and cannot contain "/", and its tag
+          # charset is narrower than git's (no "#", no quotes), so sanitize
+          # rather than let a legal-but-unpublishable branch name fail the push.
+          ref="${HEAD_REF:-$REF}"
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=$(printf '%s' "$ref" | sed -e 's|[^A-Za-z0-9_.-]|-|g')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          # cache-from only: the `docker` job owns the cache write for this key,
+          # and two jobs writing the same key in one run only fight over it.
+          cache-from: type=gha
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ steps.image.outputs.tag }}
+            ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+
   # `make cross` is what release.yml runs on a tag, and it ran nowhere else.
   # Every way it can break stayed invisible until a release, where the only fix
   # is a re-tag: a build tag that does not compile for one GOOS, a dependency
