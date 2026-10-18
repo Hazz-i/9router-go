@@ -172,7 +172,7 @@ func (d *deepgramAdapter) Connect() error {
 	header := http.Header{}
 	header.Set(orDefaultStr(d.c.cfg.AuthHeader, "Authorization"),
 		orDefaultStr(d.c.cfg.AuthScheme, "Token")+" "+d.c.apiKey)
-	wsConn, _, err := realtimeDialer.DialContext(d.c.sess.ctx, d.dialURL(), header)
+	wsConn, _, err := realtimeDialer.DialContext(d.c.sess.ctx, d.dialURL(), header) //nolint:bodyclose // gorilla: on success the handshake body IS the socket, on failure it need not be closed.
 	if err != nil {
 		return err
 	}
