@@ -16,16 +16,6 @@ import (
 
 const proxyTestProxyURL = "http://user:pass@proxy.example.com:8080"
 
-// newProxyTestRepo seeds a repo with one active deepgram connection whose
-// dataJSON carries the given proxyPoolId, returning the handler wired to a
-// chat handler that shares the repo (the router.go wiring, in miniature).
-func newProxyTestRepo(t *testing.T, dataJSON string) *Handler {
-	t.Helper()
-	repo := newTestRepo(t)
-	addConnection(t, repo, "conn-1", "deepgram", dataJSON)
-	return NewHandler(repo, &chat.ChatHandler{Repo: repo, Client: &http.Client{}})
-}
-
 // seedPool inserts a pool row and returns its id.
 func seedPool(t *testing.T, repo *db.Repo, pd db.ProxyPoolData) string {
 	t.Helper()
