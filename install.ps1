@@ -6,7 +6,7 @@
 .DESCRIPTION
   Run in PowerShell (no admin needed):
 
-    irm https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/Hazz-i/9router-go/main/install.ps1 | iex
 
   Optional overrides (set before piping, or pass when saved locally):
 
@@ -21,7 +21,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$Repo = 'luqman-v1/9router-go'
+$Repo = 'Hazz-i/9router-go'
 if ([string]::IsNullOrWhiteSpace($Version)) { $Version = 'latest' }
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
   $InstallDir = Join-Path $env:LOCALAPPDATA '9router-go'

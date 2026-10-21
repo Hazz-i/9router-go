@@ -2,13 +2,13 @@
 # 9router-go single-line installer: detects OS/arch, downloads the latest
 # release binary from GitHub, installs it, and prints next steps.
 #
-#   curl -fsSL https://raw.githubusercontent.com/luqman-v1/9router-go/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Hazz-i/9router-go/main/install.sh | bash
 #
 # Env overrides: VERSION (e.g. v1.9.2, default: latest), BINDIR (default:
 # /usr/local/bin, falls back to ~/.local/bin).
 set -euo pipefail
 
-REPO="${REPO:-luqman-v1/9router-go}"
+REPO="${REPO:-Hazz-i/9router-go}"
 VERSION="${VERSION:-latest}"
 BINDIR="${BINDIR:-/usr/local/bin}"
 
