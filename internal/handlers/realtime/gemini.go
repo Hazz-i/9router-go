@@ -28,7 +28,8 @@ const (
 
 var silenceFrameB64 = base64.StdEncoding.EncodeToString(make([]byte, silenceFrameBytes))
 
-// realtimeDialer is shared: one pooled dialer instead of a per-session one.
+// realtimeDialer is the shared direct dialer (no proxy wired): one instance
+// instead of a per-session one, and the default behind dialerFor.
 var realtimeDialer = websocket.Dialer{}
 
 // formatGeminiModel strips provider/model prefixes and maps deprecated
@@ -95,7 +96,7 @@ func newGeminiAdapter(c *adapterCtx) (Adapter, error) {
 }
 
 func (g *geminiAdapter) Connect() error {
-	wsConn, _, err := realtimeDialer.DialContext(g.c.sess.ctx, g.dialURL, nil) //nolint:bodyclose // gorilla: on success the handshake body IS the socket, on failure it need not be closed.
+	wsConn, _, err := g.c.dial.DialContext(g.c.sess.ctx, g.dialURL, nil) //nolint:bodyclose // gorilla: on success the handshake body IS the socket, on failure it need not be closed.
 	if err != nil {
 		return err
 	}

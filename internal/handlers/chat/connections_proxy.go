@@ -54,18 +54,37 @@ func (h *ChatHandler) GetClientForConnection(connData *ConnectionData) (*http.Cl
 	return h.getClientForConnection(connData)
 }
 
-func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Client, error) {
-	if connData == nil {
-		return h.Client, nil
-	}
+// proxyRoute is the resolved outbound-proxy decision for one connection, taken
+// before any client or dialer is built. The HTTP client and the WebSocket
+// dialer both read it, so the two transports cannot disagree about which pool a
+// connection uses, or about when a strict connection must be refused.
+type proxyRoute struct {
+	// url is the proxy to dial, already parsed and normalised; "" means the
+	// connection leaves directly.
+	url string
+	// typ is the pool type: "http" for a CONNECT proxy, or an edge platform
+	// ("vercel", "cloudflare", "deno", "netlify").
+	typ    string
+	strict bool
+	// relay marks an edge platform. Its endpoint forwards HTTP requests by
+	// rewriting them, so it cannot carry a tunnelled WebSocket.
+	relay  bool
+	poolID string
+}
 
-	var proxyURLStr string
-	var proxyType string
+// resolveProxyRoute walks the chain a request walks: the assigned pool, then
+// the legacy per-connection proxy, then strictness.
+func (h *ChatHandler) resolveProxyRoute(connData *ConnectionData) (proxyRoute, error) {
+	var route proxyRoute
+	if connData == nil {
+		return route, nil
+	}
+	route.poolID = connData.ProxyPoolID
 	// The row's own flag, which the pool below may override. Seeding it here is
 	// what makes a legacy connection's strict setting mean anything: the
 	// declaration alone would leave it false for every connection that is not
 	// bound to a pool.
-	strictProxy := connData.StrictProxy
+	route.strict = connData.StrictProxy
 	// Whether the operator meant this connection to leave through a proxy at
 	// all. Upstream gates its strictProxy refusal on exactly this
 	// (decolua/9router#4333): executors such as Qoder set strictProxy to mean
@@ -85,18 +104,18 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 		switch {
 		case err != nil || pool == nil:
 			log.Warn("proxy", "assigned pool not found", "pool", connData.ProxyPoolID)
-			return nil, fmt.Errorf("proxy pool %q is assigned but does not exist", connData.ProxyPoolID)
+			return route, fmt.Errorf("proxy pool %q is assigned but does not exist", connData.ProxyPoolID)
 		case !pool.IsActive:
 			log.Warn("proxy", "assigned pool is inactive", "pool", connData.ProxyPoolID)
-			return nil, fmt.Errorf("proxy pool %q is assigned but inactive", connData.ProxyPoolID)
+			return route, fmt.Errorf("proxy pool %q is assigned but inactive", connData.ProxyPoolID)
 		}
-		proxyURLStr = pool.NextURL()
-		if proxyURLStr == "" {
+		route.url = pool.NextURL()
+		if route.url == "" {
 			log.Warn("proxy", "assigned pool has no url", "pool", connData.ProxyPoolID)
-			return nil, fmt.Errorf("proxy pool %q is assigned but carries no url", connData.ProxyPoolID)
+			return route, fmt.Errorf("proxy pool %q is assigned but carries no url", connData.ProxyPoolID)
 		}
-		proxyType = pool.Type
-		strictProxy = pool.StrictProxy
+		route.typ = pool.Type
+		route.strict = pool.StrictProxy
 		// Name the pool for the log line. The lookup already happened, so this
 		// costs nothing, and "Vercel Relay" answers a question a UUID cannot.
 		connData.ResolvedProxyPool = pool.Name
@@ -108,13 +127,14 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 			// getProviderConfig rewrites the base URL to the relay and injects
 			// those headers, so the plain client is the correct transport here —
 			// the request still leaves through the relay, just not as a tunnel.
-			logProxyOnce(connData.ProxyPoolID, proxyURLStr, proxyType)
-			return h.Client, nil
+			route.relay = true
+			logProxyOnce(connData.ProxyPoolID, route.url, route.typ)
+			return route, nil
 		}
 	}
 
 	// 2. Fallback to legacy connection proxy
-	if proxyURLStr == "" {
+	if route.url == "" {
 		proxyEnabled := connData.ConnectionProxyEnabled
 		proxyURL := connData.ConnectionProxyURL
 		if connData.ProviderSpecificData != nil {
@@ -125,96 +145,107 @@ func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Cl
 				proxyURL = u
 			}
 			if sp, ok := connData.ProviderSpecificData["strictProxy"].(bool); ok {
-				strictProxy = sp
+				route.strict = sp
 			}
 		}
 		if proxyEnabled || strings.TrimSpace(proxyURL) != "" {
 			proxyIntended = true
 		}
 		if proxyEnabled && proxyURL != "" {
-			proxyURLStr = proxyURL
-			proxyType = "http"
+			route.url = proxyURL
+			route.typ = "http"
 		}
 	}
 
-	if proxyURLStr == "" {
-		if strictProxy && proxyIntended {
+	if route.url == "" {
+		if route.strict && proxyIntended {
 			// Strict mode means "never leave over the direct IP". A connection
 			// that names a proxy, has one enabled, or is bound to a pool, but
 			// resolves no usable URL, is exactly that case: an empty or
 			// discarded URL would otherwise go straight out from the real
 			// address while the dashboard shows it proxied (#4333).
 			log.Error("proxy", "strict proxy enabled but none resolved", "pool", connData.ProxyPoolID, "proxyUrl", connData.ConnectionProxyURL)
-			return nil, fmt.Errorf("%w: the connection enables a proxy but resolves none", internalproxy.ErrStrictProxyRequired)
+			return route, fmt.Errorf("%w: the connection enables a proxy but resolves none", internalproxy.ErrStrictProxyRequired)
 		}
-		return h.Client, nil
+		return route, nil
 	}
-	logProxyOnce(connData.ProxyPoolID, proxyURLStr, proxyType)
+	logProxyOnce(connData.ProxyPoolID, route.url, route.typ)
 
-	parsedURL, err := url.Parse(proxyURLStr)
+	parsedURL, err := url.Parse(route.url)
 	if err == nil && (parsedURL.Scheme == "" || parsedURL.Host == "") {
-		err = fmt.Errorf("no scheme or host in %q", proxyURLStr)
+		err = fmt.Errorf("no scheme or host in %q", route.url)
 	}
 	if err != nil {
-		log.Warn("proxy", "invalid proxy pool url", "pool", connData.ProxyPoolID, "url", proxyURLStr, "error", err)
+		log.Warn("proxy", "invalid proxy pool url", "pool", connData.ProxyPoolID, "url", route.url, "error", err)
 		// The operator named a proxy and the transport cannot dial it. Under a
 		// strict connection that is a refusal, not a reason to leave directly.
 		if connData.ProxyPoolID != "" {
 			// The connection is bound to this pool, so a URL the transport
 			// cannot parse is a broken assignment, not a missing one.
-			return nil, fmt.Errorf("proxy pool %q has an unparseable url", connData.ProxyPoolID)
+			return route, fmt.Errorf("proxy pool %q has an unparseable url", connData.ProxyPoolID)
 		}
-		if strictProxy {
-			log.Error("proxy", "strict proxy enabled but proxy url invalid", "url", proxyURLStr)
-			return nil, fmt.Errorf("%w: unparseable proxy url %q", internalproxy.ErrStrictProxyRequired, proxyURLStr)
+		if route.strict {
+			log.Error("proxy", "strict proxy enabled but proxy url invalid", "url", route.url)
+			return route, fmt.Errorf("%w: unparseable proxy url %q", internalproxy.ErrStrictProxyRequired, route.url)
 		}
+		route.url = ""
+		return route, nil
+	}
+	// Keep the parsed form: it is what every consumer dials.
+	route.url = parsedURL.String()
+	return route, nil
+}
+
+func (h *ChatHandler) getClientForConnection(connData *ConnectionData) (*http.Client, error) {
+	route, err := h.resolveProxyRoute(connData)
+	if err != nil {
+		return nil, err
+	}
+	// A direct connection, an edge relay and any non-"http" pool type ride the
+	// plain client: the relay rewrite happens at request time (getProviderConfig)
+	// and the other pool types have no transport here.
+	if route.url == "" || route.relay || (route.typ != "http" && route.typ != "") {
 		return h.Client, nil
 	}
 
-	if proxyType == "http" || proxyType == "" {
-		cacheKey := proxyURLStr
-		if strictProxy {
-			cacheKey = strictCachePrefix + proxyURLStr
-		}
-		proxyClientsMu.RLock()
-		client, ok := proxyClients[cacheKey]
-		proxyClientsMu.RUnlock()
-		if ok {
-			return client, nil
-		}
-
-		proxyClientsMu.Lock()
-		defer proxyClientsMu.Unlock()
-		if client, ok = proxyClients[cacheKey]; ok {
-			return client, nil
-		}
-		// Evict idle sockets of a random victim when over cap (amortized O(1);
-		// exact LRU is overkill — URLs are hot or dead, never warm).
-		if len(proxyClients) >= maxProxyClients {
-			for victimURL, victim := range proxyClients {
-				victim.CloseIdleConnections()
-				delete(proxyClients, victimURL)
-				break
-			}
-		}
-
-		baseTransport := internalproxy.NewSafeTransportForProxy(parsedURL.String())
-		client = &http.Client{
-			Transport: baseTransport,
-			Timeout:   h.Client.Timeout,
-		}
-		if strictProxy {
-			// The marker travels with the client, so every caller that dials a
-			// strict pool — the chat forwarder, the media lanes, the executors —
-			// refuses the direct replay in proxy.DoRequest without having to
-			// thread a flag through each of them.
-			client = internalproxy.ForbidDirectReplay(client)
-		}
-		proxyClients[cacheKey] = client
+	cacheKey := route.url
+	if route.strict {
+		cacheKey = strictCachePrefix + route.url
+	}
+	proxyClientsMu.RLock()
+	client, ok := proxyClients[cacheKey]
+	proxyClientsMu.RUnlock()
+	if ok {
 		return client, nil
 	}
 
-	// For Edge Relays (vercel, cloudflare, deno), standard client is used because
-	// URL rewriting and x-relay headers are handled at request time.
-	return h.Client, nil
+	proxyClientsMu.Lock()
+	defer proxyClientsMu.Unlock()
+	if client, ok = proxyClients[cacheKey]; ok {
+		return client, nil
+	}
+	// Evict idle sockets of a random victim when over cap (amortized O(1);
+	// exact LRU is overkill — URLs are hot or dead, never warm).
+	if len(proxyClients) >= maxProxyClients {
+		for victimURL, victim := range proxyClients {
+			victim.CloseIdleConnections()
+			delete(proxyClients, victimURL)
+			break
+		}
+	}
+
+	baseTransport := internalproxy.NewSafeTransportForProxy(route.url)
+	client = &http.Client{
+		Transport: baseTransport,
+		Timeout:   h.Client.Timeout,
+	}
+	if route.strict {
+		// The marker travels with the client, so every caller that dials a
+		// strict pool — the chat forwarder, the media lanes, the executors —
+		// refuses the direct replay in proxy.DoRequest without having to
+		// thread a flag through each of them.
+		client = internalproxy.ForbidDirectReplay(client)
+	}
+	proxyClients[cacheKey] = client
+	return client, nil
 }

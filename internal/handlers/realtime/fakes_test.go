@@ -207,7 +207,7 @@ func newTestRepo(t *testing.T) (*sql.DB, *db.Repo) {
 // what ends the last session).
 func newGateway(t *testing.T, repo *db.Repo, wsURLs map[string]string) *httptest.Server {
 	t.Helper()
-	h := NewHandler(repo)
+	h := NewHandler(repo, nil)
 	h.configFor = func(provider string) *providers.RealtimeConfig {
 		return fixtureConfig(provider, wsURLs[provider])
 	}

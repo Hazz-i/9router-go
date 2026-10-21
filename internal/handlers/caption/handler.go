@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/chat"
+	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/providers"
@@ -47,15 +49,22 @@ type Handler struct {
 
 	upgrader websocket.Upgrader
 	dial     websocket.Dialer
-	http     *http.Client
+	// dialFor resolves the per-connection outbound-proxy dialer (the chat
+	// lane's proxy chain). nil keeps dial as the default dialer, used when the
+	// connection has no proxy to honor (and by tests).
+	dialFor func(*shared.ConnectionData) (*websocket.Dialer, error)
+	http    *http.Client
 
 	// wg counts live sessions. waitSessions drains it so test teardown (and
 	// any future shutdown path) never closes the repo under a session.
 	wg sync.WaitGroup
 }
 
-// NewHandler builds the caption handler over the shared repo.
-func NewHandler(repo *db.Repo) *Handler {
+// NewHandler builds the caption handler over the shared repo. When chatH is
+// given, sessions resolve their upstream dialer through the connection's
+// outbound-proxy chain; a nil chat dialer (tests, direct-only setups) keeps
+// the plain default dialer.
+func NewHandler(repo *db.Repo, chatH *chat.ChatHandler) *Handler {
 	h := &Handler{
 		repo:      repo,
 		supported: providers.SupportsLiveCaption,
@@ -77,6 +86,9 @@ func NewHandler(repo *db.Repo) *Handler {
 	}
 	if cfg := providers.GetLiveCaptionConfig("selfhosted-stt"); cfg != nil && cfg.BaseURL != "" {
 		h.selfhostedBase = cfg.BaseURL
+	}
+	if chatH != nil {
+		h.dialFor = chatH.WebSocketDialerForConnection
 	}
 	return h
 }

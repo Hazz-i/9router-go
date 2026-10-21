@@ -58,11 +58,17 @@ func (s *session) currentUpstream() *websocket.Conn {
 	return s.up
 }
 
-// dialUpstream opens the upstream WebSocket. A failure replicates the
-// upstream ws event pair — an `error` frame and an `upstream_closed` frame —
-// and leaves the client socket open, so it never surfaces as a setup throw.
+// dialUpstream opens the upstream WebSocket through the connection's proxy
+// dialer when one was resolved (s.dial), else the handler's default. A
+// failure replicates the upstream ws event pair — an `error` frame and an
+// `upstream_closed` frame — and leaves the client socket open, so it never
+// surfaces as a setup throw.
 func (s *session) dialUpstream(prefix, url string, header http.Header) {
-	up, _, err := s.h.dial.DialContext(s.ctx, url, header) //nolint:bodyclose // gorilla: on success the handshake body IS the socket, on failure it need not be closed.
+	dialer := s.dial
+	if dialer == nil {
+		dialer = &s.h.dial
+	}
+	up, _, err := dialer.DialContext(s.ctx, url, header) //nolint:bodyclose // gorilla: on success the handshake body IS the socket, on failure it need not be closed.
 	if err != nil {
 		s.markUpstreamClosed()
 		s.upstreamError(prefix, err)

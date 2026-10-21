@@ -52,8 +52,8 @@ func SetupRoutes(r interface {
 	chatH := chat.NewChatHandler(repo, ts)
 	mediaH := media.NewMediaHandler(repo, ts, chatH)
 	oauthH := oauth.NewOAuthHandler(repo)
-	realtimeH := realtime.NewHandler(repo)
-	captionH := caption.NewHandler(repo)
+	realtimeH := realtime.NewHandler(repo, chatH)
+	captionH := caption.NewHandler(repo, chatH)
 
 	dashH := dashboard.NewDashboardHandler(repo, ts)
 	if chatH != nil {

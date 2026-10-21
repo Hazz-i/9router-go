@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/chat"
 	"9router/proxy/internal/handlers/shared"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/models"
@@ -42,6 +43,11 @@ type Handler struct {
 	// configFor is the provider→RealtimeConfig seam. It exists so tests can
 	// inject fixture configs; production always uses providers.GetRealtimeConfig.
 	configFor func(string) *providers.RealtimeConfig
+	// dialFor maps a connection to the WebSocket dialer that leaves through
+	// the connection's own proxy chain. It is the chat handler's
+	// WebSocketDialerForConnection in production; nil (tests, direct
+	// construction) keeps sessions dialing direct.
+	dialFor func(*shared.ConnectionData) (*websocket.Dialer, error)
 	// wg counts live sessions. waitSessions drains it so test teardown (and
 	// any future shutdown path) never closes the repo under a session.
 	wg sync.WaitGroup
@@ -51,8 +57,21 @@ type Handler struct {
 // fully torn down (usage row written, goroutines joined).
 func (h *Handler) waitSessions() { h.wg.Wait() }
 
-func NewHandler(repo *db.Repo) *Handler {
-	return &Handler{repo: repo, configFor: providers.GetRealtimeConfig}
+func NewHandler(repo *db.Repo, chatH *chat.ChatHandler) *Handler {
+	h := &Handler{repo: repo, configFor: providers.GetRealtimeConfig}
+	if chatH != nil {
+		h.dialFor = chatH.WebSocketDialerForConnection
+	}
+	return h
+}
+
+// dialerFor resolves the outbound dialer for one connection: the connection's
+// proxy chain when one is wired, else the shared direct dialer.
+func (h *Handler) dialerFor(connData *shared.ConnectionData) (*websocket.Dialer, error) {
+	if h.dialFor == nil {
+		return &realtimeDialer, nil
+	}
+	return h.dialFor(connData)
 }
 
 // HandleWS serves one request on /v1/realtime. Without an Upgrade header it
@@ -183,7 +202,17 @@ func (h *Handler) serveSession(conn *websocket.Conn, r *http.Request) {
 		return
 	}
 
-	// 4. Adapter construction — Deepgram's ?listen/?think/?speak resolution
+	// 4. Outbound proxy: the upstream dialer honors the connection's proxy
+	// pool, the same chain the HTTP path uses. A strict pool the socket
+	// cannot tunnel through refuses the session before anything opens.
+	dial, err := h.dialerFor(connData)
+	if err != nil {
+		sendPreSessionError(conn, "server_error", "proxy_error", fmt.Sprintf("Proxy error: %v", err))
+		closePreSession(conn, 4500, "Proxy error")
+		return
+	}
+
+	// 5. Adapter construction — Deepgram's ?listen/?think/?speak resolution
 	// throws here, before any upstream socket is opened.
 	s := newSession(h.repo, conn)
 	s.provider = provider
@@ -202,6 +231,7 @@ func (h *Handler) serveSession(conn *websocket.Conn, r *http.Request) {
 		connData:     connData,
 		query:        q,
 		sess:         s,
+		dial:         dial,
 	}
 	ad, err := createRealtimeAdapter(provider, c)
 	if err != nil {
@@ -210,7 +240,7 @@ func (h *Handler) serveSession(conn *websocket.Conn, r *http.Request) {
 		return
 	}
 
-	// 5. Session: the client read pump owns this goroutine; the upstream dial
+	// 6. Session: the client read pump owns this goroutine; the upstream dial
 	// is async exactly like upstream's adapter.connect() promise. The dial
 	// goroutine is tracked by the session's WaitGroup so teardown joins it
 	// even while it is still blocked in DialContext (ctx cancel aborts that).
@@ -317,8 +347,8 @@ func providerToken(q url.Values) string {
 // findConnection picks the first active connection of the provider that
 // carries an API key.
 //
-// shortcut: no proxy-pool dialing and no mid-session account rotation for a
-// socket session, upgrade when a WS-through-proxy provider appears.
+// shortcut: no mid-session account rotation for a socket session, upgrade
+// when a WS-through-proxy provider appears.
 func (h *Handler) findConnection(provider string) (*models.ProviderConnection, *shared.ConnectionData) {
 	conns, err := h.repo.GetProviderConnections(provider, true)
 	if err != nil {

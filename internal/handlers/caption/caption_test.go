@@ -38,7 +38,7 @@ func newTestRepo(t *testing.T) *db.Repo {
 // its own test that stubs it false).
 func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
-	h := NewHandler(newTestRepo(t))
+	h := NewHandler(newTestRepo(t), nil)
 	h.supported = func(string) bool { return true }
 	return h
 }

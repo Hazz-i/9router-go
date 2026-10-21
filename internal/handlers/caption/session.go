@@ -39,6 +39,9 @@ type session struct {
 
 	connID   string
 	connData *shared.ConnectionData
+	// dial is the per-connection proxy dialer resolved in resolveConnection.
+	// nil keeps the handler's default dialer (direct, no proxy chain).
+	dial *websocket.Dialer
 
 	// word state is written by the upstream reader and read by the client
 	// reader (get_subtitles) and by cleanup (usage count).
@@ -155,10 +158,12 @@ func splitModel(modelParam string) (prefix, model string, ok bool) {
 
 // resolveConnection picks one active connection for the provider.
 //
-// shortcut: no proxy-pool dialing and no mid-session account rotation for a
-// socket session, upgrade when a WS-through-proxy provider appears. The first
-// active connection carrying a credential wins; without one the session is
-// refused with the 4503 shape upstream uses for "no credentials".
+// shortcut: no mid-session account rotation for a socket session, upgrade when
+// a rotating account appears. Proxy-pool dialing exists: the pinned connection
+// also resolves its outbound dialer through the chat lane's chain, and a pool
+// the WebSocket cannot use kills the session before any upstream dial. The
+// first active connection carrying a credential wins; without one the session
+// is refused with the 4503 shape upstream uses for "no credentials".
 func (s *session) resolveConnection() bool {
 	conns, err := s.h.repo.GetProviderConnections(s.provider, true)
 	if err != nil || len(conns) == 0 {
@@ -172,11 +177,32 @@ func (s *session) resolveConnection() bool {
 		}
 		if s.h.hasCredential(connData) {
 			s.connID, s.connData = conn.ID, connData
-			return true
+			return s.wireDialer()
 		}
 	}
 	s.noCredentials(nil)
 	return false
+}
+
+// wireDialer resolves the pinned connection's outbound-proxy dialer. A
+// connection bound to a pool the WebSocket cannot use — a strict edge relay,
+// a missing or inactive pool — must refuse the session here: falling back to
+// a direct dial would leak the operator's egress IP, the one thing the proxy
+// assignment exists to prevent.
+func (s *session) wireDialer() bool {
+	if s.h.dialFor == nil {
+		return true
+	}
+	d, err := s.h.dialFor(s.connData)
+	if err != nil {
+		msg := fmt.Sprintf("No usable proxy for %s: %v", s.provider, err)
+		// The close reason is capped by the WS spec at 123 bytes; the full
+		// detail rides the error frame above, not the close.
+		s.errAndClose(4503, "No usable proxy for "+s.provider, msg)
+		return false
+	}
+	s.dial = d
+	return true
 }
 
 // noCredentials sends the error frame and the 4503 close upstream uses when

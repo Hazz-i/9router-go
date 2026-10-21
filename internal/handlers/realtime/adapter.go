@@ -59,9 +59,13 @@ type adapterCtx struct {
 	voice        string
 	instructions string
 	apiKey       string
-	connData     *shared.ConnectionData
-	query        url.Values
-	sess         *session
+	// dial is the outbound dialer serveSession resolved for this connection:
+	// the connection's proxy pool when wired, the shared direct dialer
+	// otherwise. Both adapters dial the upstream through it.
+	dial     *websocket.Dialer
+	connData *shared.ConnectionData
+	query    url.Values
+	sess     *session
 }
 
 // overrideURL returns the per-connection baseUrl override (providerSpecificData
