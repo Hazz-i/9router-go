@@ -103,8 +103,10 @@ type liveSTTSession struct {
 }
 
 // transcribeGeminiLive streams one audio file through the Live bidirectional
-// socket and returns the accumulated transcript.
-func transcribeGeminiLive(ctx context.Context, baseURL, model, token string, audio []byte, mimeType string, form map[string]string) (*liveSTTResult, error) {
+// socket and returns the accumulated transcript. dialer is resolved from the
+// provider connection's proxy chain (the same seam the realtime and caption
+// lanes use); nil keeps the direct default.
+func transcribeGeminiLive(ctx context.Context, baseURL, model, token string, audio []byte, mimeType string, form map[string]string, dialer *websocket.Dialer) (*liveSTTResult, error) {
 	if len(audio) == 0 {
 		return nil, liveErrf(http.StatusBadRequest, "Empty audio file")
 	}
@@ -114,6 +116,9 @@ func transcribeGeminiLive(ctx context.Context, baseURL, model, token string, aud
 		return nil, err
 	}
 
+	if dialer == nil {
+		dialer = websocket.DefaultDialer
+	}
 	session := &liveSTTSession{
 		wsURL:      wsURL,
 		model:      model,
@@ -122,7 +127,7 @@ func transcribeGeminiLive(ctx context.Context, baseURL, model, token string, aud
 		system:     liveSystemInstruction(form),
 		form:       form,
 		goAwayLeft: geminiLiveGoAwayReconnects,
-		dialer:     websocket.DefaultDialer,
+		dialer:     dialer,
 	}
 	return session.run(ctx)
 }
@@ -427,7 +432,16 @@ func (h *MediaHandler) handleGeminiLiveSTT(w http.ResponseWriter, r *http.Reques
 			return fmt.Errorf("no API key found for %s connection %s", modelInfo.Provider, conn.ID)
 		}
 
-		result, transcribeErr := transcribeGeminiLive(r.Context(), geminiLiveRESTBase, model, apiKey, audio, mimeType, form)
+		// Outbound proxy: the Live socket leaves through the connection's
+		// proxy chain, the same one the HTTP path uses. A strict pool the
+		// socket cannot tunnel through fails the transcription before any
+		// dial.
+		dialer, dialerErr := h.ChatH.WebSocketDialerForConnection(connData)
+		if dialerErr != nil {
+			return liveErrf(http.StatusBadGateway, "Gemini Live cannot dial upstream through the connection %s proxy: %v", conn.ID, dialerErr)
+		}
+
+		result, transcribeErr := transcribeGeminiLive(r.Context(), geminiLiveRESTBase, model, apiKey, audio, mimeType, form, dialer)
 		if transcribeErr == nil {
 			return writeLiveSTTResult(w, result, form["response_format"])
 		}

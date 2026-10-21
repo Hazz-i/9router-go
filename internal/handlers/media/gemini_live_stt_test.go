@@ -8,10 +8,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"9router/proxy/internal/db"
+	"9router/proxy/internal/handlers/shared"
+	internalproxy "9router/proxy/internal/proxy"
 	"github.com/gorilla/websocket"
 )
 
@@ -156,7 +160,7 @@ func TestTranscribeGeminiLive_StreamsAudioAndSettlesOnTurnComplete(t *testing.T)
 	result, err := transcribeGeminiLive(context.Background(),
 		"ws://"+strings.TrimPrefix(srv.URL, "http://")+"/v1beta/models",
 		"live-model", "key-1", audio, "audio/wav",
-		map[string]string{"prompt": "transcribe", "language": "id"})
+		map[string]string{"prompt": "transcribe", "language": "id"}, nil)
 	if err != nil {
 		t.Fatalf("transcribeGeminiLive: %v", err)
 	}
@@ -244,7 +248,7 @@ func TestTranscribeGeminiLive_PartialTranscriptOnClose(t *testing.T) {
 
 			result, err := transcribeGeminiLive(context.Background(),
 				"ws://"+strings.TrimPrefix(srv.URL, "http://")+"/v1beta/models",
-				"live-model", "key-1", []byte{0x01, 0x02}, "audio/wav", nil)
+				"live-model", "key-1", []byte{0x01, 0x02}, "audio/wav", nil, nil)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %+v", result)
@@ -262,7 +266,7 @@ func TestTranscribeGeminiLive_PartialTranscriptOnClose(t *testing.T) {
 }
 
 func TestTranscribeGeminiLive_EmptyAudio(t *testing.T) {
-	_, err := transcribeGeminiLive(context.Background(), "https://host/v1beta/models", "m", "k", nil, "audio/wav", nil)
+	_, err := transcribeGeminiLive(context.Background(), "https://host/v1beta/models", "m", "k", nil, "audio/wav", nil, nil)
 	var liveErr *liveSTTError
 	if err == nil {
 		t.Fatal("expected an error for empty audio")
@@ -309,5 +313,92 @@ func TestLiveTimeoutFieldClampsAtMax(t *testing.T) {
 	}
 	if got := liveTimeoutField(nil, "turn_timeout_ms", 7*time.Second); got != 7*time.Second {
 		t.Errorf("a missing timeout = %v, want the fallback", got)
+	}
+}
+
+// mustParseRawURL parses a proxy url; the pool's own Proxy hook returns the
+// same one, so the comparison is through it.
+func mustParseRawURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse url %q: %v", raw, err)
+	}
+	return u
+}
+
+// liveDialerProxyURL returns the url a dialer's Proxy hook yields, or nil when
+// it dials direct. Nothing is dialed: the hook is consulted in isolation.
+func liveDialerProxyURL(t *testing.T, d *websocket.Dialer) *url.URL {
+	t.Helper()
+	if d.Proxy == nil {
+		return nil
+	}
+	u, err := d.Proxy(&http.Request{})
+	if err != nil {
+		t.Fatalf("proxy hook: %v", err)
+	}
+	return u
+}
+
+// TestDialerForConnection_ProxyPool proves the Live STT lane honours the
+// provider connection's proxy chain the same way the realtime and caption
+// lanes do: an http proxy pool is tunnelled, a strict edge-relay pool refuses
+// the dial — all before any upstream socket opens.
+func TestDialerForConnection_ProxyPool(t *testing.T) {
+	repo := newNetlifyRepo(t)
+	chatH := newTestMediaHandler(repo).ChatH
+
+	httpPool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name: "sg-http", ProxyURL: "http://user:pass@proxy.example.com:8080", Type: "http",
+	})
+	if err != nil {
+		t.Fatalf("insert http pool: %v", err)
+	}
+	relayPool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name: "edge-relay", ProxyURL: "https://relay.example.com", Type: "vercel", StrictProxy: true,
+	})
+	if err != nil {
+		t.Fatalf("insert relay pool: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		connData  *shared.ConnectionData
+		wantProxy *url.URL // non-nil: the dialer's Proxy hook must yield it
+		wantErr   bool
+	}{
+		{
+			name:      "http proxy pool is tunnelled",
+			connData:  &shared.ConnectionData{ProxyPoolID: httpPool["id"].(string)},
+			wantProxy: mustParseRawURL(t, "http://user:pass@proxy.example.com:8080"),
+		},
+		{
+			name:     "strict edge-relay pool refuses the dial",
+			connData: &shared.ConnectionData{ProxyPoolID: relayPool["id"].(string)},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dialer, err := chatH.WebSocketDialerForConnection(tt.connData)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected a strict refusal, got dialer %+v", dialer)
+				}
+				if !errors.Is(err, internalproxy.ErrStrictProxyRequired) {
+					t.Errorf("error should wrap ErrStrictProxyRequired, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("WebSocketDialerForConnection: %v", err)
+			}
+			got := liveDialerProxyURL(t, dialer)
+			if got == nil || got.String() != tt.wantProxy.String() {
+				t.Errorf("proxy = %v, want %s", got, tt.wantProxy)
+			}
+		})
 	}
 }

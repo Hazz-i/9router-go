@@ -28,6 +28,10 @@ showing the connection as proxied.
   the direct dialer, which is what the unit fixtures and any direct-only setup
   use. The remaining `shortcut:` comments now state only the limit that is still
   true (no mid-session account rotation for a socket session).
+- The third WebSocket lane follows: `media/gemini_live_stt.go` hardcoded
+  `websocket.DefaultDialer`, so a Gemini Live transcription also left from the
+  server's address. It now takes the connection's dialer too and refuses the
+  request with the proxy named when the pool cannot tunnel.
 
 Verified with `go test -count=1 ./internal/handlers/chat/
 ./internal/handlers/realtime/ ./internal/handlers/caption/`: table coverage for
