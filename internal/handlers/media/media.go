@@ -12,13 +12,16 @@ import (
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/usagetracker"
 	"bytes"
+	"context"
 	"encoding/base64"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -127,6 +130,20 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 
 	req.Header.Set(constants.HeaderContentType, constants.ContentTypeJSON)
 	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+	for k, v := range providerCfg.StaticHeaders {
+		if req.Header.Get(k) == "" {
+			req.Header.Set(k, v)
+		}
+	}
+	// GitHub Copilot hands out a short-lived token alongside the OAuth
+	// credential, and the embeddings endpoint is authenticated by that token
+	// rather than by the stored one. It is set after the static-header loop
+	// because it replaces the Authorization header on purpose.
+	if connData != nil {
+		if copilotToken, ok := connData.ProviderSpecificData["copilotToken"].(string); ok && copilotToken != "" {
+			req.Header.Set("Authorization", "Bearer "+copilotToken)
+		}
+	}
 
 	start := time.Now()
 	resp, err := h.Client.Do(req)
@@ -286,11 +303,12 @@ func (h *MediaHandler) forwardSystemoneRequest(w http.ResponseWriter, r *http.Re
 		return
 	}
 	resp, err := client.Do(req)
-	if err != nil {
+	if err != nil && r.Context().Err() == nil {
 		// Transport-level failure only (proxy block, DNS, reset): retry once
 		// direct before failing. A real upstream status (e.g. 403 account
 		// verification) must surface — retrying direct against the same
-		// target would mask it.
+		// target would mask it. A canceled request is neither: the caller is
+		// gone, so the retry would make a fresh connection for nobody.
 		directReq, err2 := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(finalBody))
 		if err2 == nil {
 			directReq.Header = req.Header.Clone()
@@ -584,13 +602,84 @@ func (h *MediaHandler) HandleScrape(w http.ResponseWriter, r *http.Request) {
 
 // HandleWebFetch handles /v1/web/fetch.
 func (h *MediaHandler) HandleWebFetch(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "failed to read body")
 		return
 	}
 	defer r.Body.Close()
-	h.forwardMediaRequest(w, r, body, "gpt-4o", "/v1/web/fetch")
+
+	var req struct {
+		URL      string `json:"url"`
+		Model    string `json:"model"`
+		Provider string `json:"provider"`
+		Format   string `json:"format"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || strings.TrimSpace(req.URL) == "" {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "missing or invalid url")
+		return
+	}
+
+	parsedURL, err := url.Parse(req.URL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid url format")
+		return
+	}
+	if targetPrivate(r.Context(), parsedURL.Hostname()) {
+		handlerutil.WriteJSON(w, http.StatusForbidden, map[string]any{
+			"error": map[string]string{"message": "private IP blocked by SSRF protection", "type": "permission_denied", "code": "address_forbidden"},
+		})
+		return
+	}
+
+	// A provider named without a model is the model: /v1/web/fetch carries the
+	// extractor in `model`, and a caller that sent only `provider` was being
+	// dispatched to the default instead of the one it named.
+	if req.Model == "" && req.Provider != "" {
+		var rawMap map[string]any
+		if err := json.Unmarshal(body, &rawMap); err == nil && rawMap != nil {
+			rawMap["model"] = req.Provider
+			if rebuilt, mErr := json.Marshal(rawMap); mErr == nil {
+				body = rebuilt
+			}
+		}
+	}
+	h.forwardMediaRequest(w, r, body, "jina-reader", "/v1/web/fetch")
+}
+
+// targetPrivate reports whether host names an address the gateway must not
+// fetch on a caller's behalf. A literal IP is judged directly; a name is
+// resolved once, before dispatch. ALLOW_PRIVATE_NETWORKING is the operator's
+// own switch and is answered first, so both branches agree: a literal IP and a
+// name that resolves to the same address get the same verdict.
+//
+// This check is a refusal the caller can see, not the boundary itself: the
+// dialer's socket-level guard is what actually stops the connection, and it
+// also covers the rebind between this lookup and the dial. Checking here means
+// the common case answers 403 with a reason instead of surfacing as a transport
+// error from a provider several layers down.
+func targetPrivate(ctx context.Context, host string) bool {
+	if host == "" {
+		return true
+	}
+	if proxy.IsPrivateNetworkingAllowed() {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return proxy.IsPrivateIP(ip)
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		// Unresolvable is not this check's call to make: let the dispatch
+		// produce the transport error, which names the real problem.
+		return false
+	}
+	for _, ip := range ips {
+		if proxy.IsPrivateIP(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Request, body []byte, defaultModel, endpoint string) {
@@ -763,6 +852,13 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Warn("media", "upstream combo request failed", "endpoint", endpoint, "provider", subInfo.Provider, "model", subInfo.Model, "conn", conn.ID[:min(8, len(conn.ID))], "error", err)
+				// A cancelled caller is not a failed model. Trying the next
+				// member of the combo would make a fresh upstream connection
+				// for a client that has already gone.
+				if r.Context().Err() != nil {
+					handlerutil.WriteJSONError(w, 499, "client closed request")
+					return
+				}
 				lastErr = err.Error()
 				continue
 			}

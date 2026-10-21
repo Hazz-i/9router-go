@@ -2,6 +2,7 @@ package providers
 
 import (
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"unique"
@@ -28,7 +29,19 @@ func InvalidateCapabilitiesCache() {
 }
 
 // SetCustomModelCaps registers caps for a custom model (provider/model).
+//
+// A model id the provider's static registry catalog already owns is refused
+// here: the catalog is what the gateway advertises for a known model (context
+// window, max output, modality flags), and a custom row saved under the same id
+// must not replace those numbers. The refusal lives at this one writer so that
+// every publisher obeys it — GET /v1/models and /api/models/caps both call this
+// — instead of each route remembering to filter its own input first. The map is
+// process-wide, so publishing on the wrong route used to change every later
+// capability read for the lifetime of the process.
 func SetCustomModelCaps(provider, model string, caps Capabilities) {
+	if staticCatalogOwnsModel(provider, model) {
+		return
+	}
 	key := provider + "||" + model
 	customCapsMu.Lock()
 	customCaps[key] = caps
@@ -43,6 +56,23 @@ func SetCustomModelCaps(provider, model string, caps Capabilities) {
 	customCapsMu.Unlock()
 	// Invalidate cache so new caps are picked up
 	InvalidateCapabilitiesCache()
+}
+
+// staticCatalogOwnsModel reports whether the static registry catalog for
+// provider already lists model. GetProviderModels resolves provider aliases
+// itself ("ocz" finds the opencode-zen catalog), and a provider-qualified id
+// ("ocz/mimo-v2.6-flash-free") is matched by its bare id as well, mirroring the
+// two keys SetCustomModelCaps writes. A provider node prefix has no static
+// catalog, so nothing published under one is refused.
+func staticCatalogOwnsModel(provider, model string) bool {
+	ids := GetProviderModels(provider)
+	if len(ids) == 0 {
+		return false
+	}
+	if _, base, ok := strings.CutLast(model, "/"); ok {
+		return slices.Contains(ids, model) || slices.Contains(ids, base)
+	}
+	return slices.Contains(ids, model)
 }
 
 // GetCustomModelCaps returns custom caps if present.
@@ -407,25 +437,36 @@ func init() {
 	// gemini-web overrides the generic `*gemini-3*` pattern row. The web surface
 	// and the API surface both answer `gemini-3*` requests, but they are not the
 	// same product, and the pattern row was written for the API. What the site's
-	// own composer offers is text and three thinking levels: no image input, no
-	// audio, no video, and no search toggle the executor can set. Declaring them
+	// own composer offers is text, images and three thinking levels: no audio,
+	// no video, and no search toggle the executor can set. Declaring them
 	// would advertise controls that silently do nothing.
+	//
+	// Vision is set because the site's own composer accepts an image: the
+	// bytes go to Google's content-push service and the path it returns
+	// travels with the turn. That is the same attachment mechanism the
+	// reference bridge uses, and it was verified live against
+	// gemini.google.com on 2026-10-20.
 	//
 	// "gemini-level" is the site's own enum (low/medium/high) and it cannot be
 	// turned off: level 1 is thinking's own floor.
 	//
 	// Every catalogued name is listed, not only the versioned ones: a name that
 	// falls through to the generic `*gemini-3*` pattern row would advertise the
-	// API surface's vision and search flags, which is the outcome this override
+	// API surface's search flag, which is the outcome this override exists to
+	// prevent.
+	geminiWebCaps := Capabilities{Vision: true, Tools: true, Reasoning: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}
+	// The Lite models do not think: the site's registry publishes no
+	// reasoning level for them, and their own names say so. Advertising a
+	// thinking level for a model that has none is the outcome the override
 	// exists to prevent.
-	geminiWebCaps := Capabilities{Tools: true, Reasoning: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}
+	geminiWebLiteCaps := Capabilities{Vision: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}
 	providerCapabilities["gemini-web"] = map[string]Capabilities{
 		"gemini-3.1-pro":        geminiWebCaps,
 		"gemini-3.7-flash":      geminiWebCaps,
-		"gemini-3.1-flash-lite": geminiWebCaps,
+		"gemini-3.1-flash-lite": geminiWebLiteCaps,
 		"gemini-pro":            geminiWebCaps,
 		"gemini-flash":          geminiWebCaps,
-		"gemini-flash-lite":     geminiWebCaps,
+		"gemini-flash-lite":     geminiWebLiteCaps,
 		"gemini-argon":          geminiWebCaps,
 		"gemini-3-pro":          geminiWebCaps,
 		"gemini-4-argon":        geminiWebCaps,
@@ -499,7 +540,7 @@ var patternCapabilities = []patternCapability{
 	// and every consumer fell through to the 128k/4096 floor. The bridge
 	// publishes the bare id "gemini-argon" as well as the "gemini-4-argon"
 	// alias, so both spellings have to hit this row.
-	{pattern: "*gemini*argon*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
+	{pattern: "*gemini*argon*", caps: Capabilities{Vision: true, PDF: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	{pattern: "*gemini-4*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	{pattern: "*gemini-3.8*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},
 	{pattern: "*gemini-3.7*", caps: Capabilities{Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "gemini-level", ThinkingCanDisable: new(false)}},

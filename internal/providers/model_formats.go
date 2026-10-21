@@ -10,6 +10,7 @@ const (
 	FormatOpenAI          = "openai"
 	FormatClaude          = "claude"
 	FormatOpenAIResponses = "openai-responses"
+	FormatGemini          = "gemini"
 )
 
 // ProviderModelFormats is the per-model wire-format metadata upstream carries on
@@ -22,6 +23,8 @@ var ProviderModelFormats = map[string]map[string]ModelFormats{
 	"kimi-coding":  kimiModelFormats,
 	"ocz":          openCodeZenModelFormats,
 	"opencode-zen": openCodeZenModelFormats,
+	"ocg":          openCodeGoModelFormats,
+	"opencode-go":  openCodeGoModelFormats,
 }
 
 // museModelFormats mirrors open-sse/providers/registry/muse.js models[]: Meta
@@ -164,6 +167,15 @@ var openCodeZenModelFormats = map[string]ModelFormats{
 	"muse-spark-1.2-contributor-free": openCodeZenResponsesFormat,
 }
 
+// openCodeGoModelFormats mirrors open-sse/providers/registry/opencode-go.js models[].
+var openCodeGoModelFormats = map[string]ModelFormats{
+	"claude-haiku-5-5":           openCodeZenFormats(FormatClaude, FormatClaude),
+	"gemini-4-argon-contributor": openCodeZenFormats(FormatGemini, FormatGemini),
+	"longcat-2.5-preview-free":   openCodeZenFormats(FormatOpenAI, FormatOpenAI),
+	"step-5-preview":             openCodeZenFormats(FormatOpenAI, FormatOpenAI),
+	"beam-free":                  openCodeZenFormats(FormatOpenAI, FormatOpenAI),
+}
+
 var openCodeZenResponsesFormat = openCodeZenFormats(FormatOpenAIResponses, FormatOpenAIResponses)
 
 // openCodeFamilyFormats is the unknown-id fallback for the OpenCode endpoint
@@ -183,6 +195,7 @@ var openCodeFamilyFormats = []struct {
 	{"minimax", openCodeZenFormats(FormatOpenAI, FormatOpenAI, FormatClaude)},
 	{"qwen", openCodeZenFormats(FormatOpenAI, FormatOpenAI, FormatClaude)},
 	{"claude-", openCodeZenFormats(FormatClaude, FormatClaude)},
+	{"gemini-", openCodeZenFormats(FormatGemini, FormatGemini)},
 }
 
 // isOpenCodeProvider reports whether a provider id/alias is one of the OpenCode
@@ -252,6 +265,14 @@ func openCodeFamilyFormatsFor(base string) *ModelFormats {
 // forwards them there with public credentials instead of the user key.
 // big-pickle is deliberately absent: it has no live 403 evidence and the lane
 // table carries it as paid chat, so moving it could break working calls.
+// This map answers "which gate serves it", not "what does it cost" — pricing is
+// internal/pricing.KnownFreeModels, where big-pickle is billed at zero while it
+// stays on this paid lane (#410). The disagreement runs both ways: the -free
+// suffix here does not by itself mean the price table has no row, and
+// deepseek-v4-flash-free resolves to a paid row through the deepseek-v* glob
+// while this map serves it keyless. Both ids are recorded in
+// model_formats_pricing_divergence_test.go, which reconciles the two lists
+// instead of editing one to match the other.
 var openCodeFreeTierModels = map[string]bool{
 	// opencode (free provider)
 	"muse-spark-1.2-contributor-free": true,

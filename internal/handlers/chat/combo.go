@@ -16,6 +16,7 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/log"
 	"9router/proxy/internal/providers"
+	internalproxy "9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
 )
 
@@ -539,11 +540,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 			excludeIDs = nil
 		}
 
-		for _, entry := range models {
+		for i, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
 			}
+			isLastModel := i == len(models)-1
 
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
@@ -572,6 +574,20 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 					var err error
 					picked, cData, err = h.getBestConnectionWithContext(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
+						// A node the gateway refuses on purpose — expired contract,
+						// spent lifetime quota — must reach the client as that
+						// refusal rather than as an anonymous "all combo models
+						// failed": an operator can act on the first and not on the
+						// second.
+						if refusal, blocked := providerLimitRefusal(err); blocked {
+							log.Info("combo", "provider node unusable, next candidate",
+								"provider", modelInfo.Provider, "model", modelInfo.Model, "axis", refusal.Axis)
+							var refusedErr *upstreamError
+							errors.As(err, &refusedErr)
+							if refusedErr != nil {
+								lastErr = refusedErr
+							}
+						}
 						break
 					}
 					connID = picked.ID
@@ -606,12 +622,16 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 
 				var fwdErr error
+				fwdCtx := ctx
+				if !isStream {
+					fwdCtx = internalproxy.WithZeroContentProbe(ctx, !isLastModel)
+				}
 				if modelInfo.Provider == "mimo-free" {
 					comboMetrics := &streamMetrics{}
-					fwdErr = h.MimoFreeChat(ctx, cw, upstreamJSON, isStream, comboMetrics)
+					fwdErr = h.MimoFreeChat(fwdCtx, cw, upstreamJSON, isStream, comboMetrics)
 				} else {
 					fwdErr = h.tryForwardWithConnection(forwardRequestParams{
-						Ctx: ctx, W: cw, Provider: modelInfo.Provider, Model: modelInfo.Model,
+						Ctx: fwdCtx, W: cw, Provider: modelInfo.Provider, Model: modelInfo.Model,
 						RequestedModel: comboName, ComboName: comboName,
 						ConnectionID: connID, ConnName: connObjName(picked), ConnEmail: connObjEmail(picked),
 						ConnData: connData, Body: upstreamJSON,
@@ -621,6 +641,12 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 				}
 
 				if fwdErr != nil {
+					var zcErr *internalproxy.ZeroContentError
+					if errors.As(fwdErr, &zcErr) {
+						log.Warn("combo", "zero usable content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusOK, Body: zcErr.Body}
+						break
+					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
 						break
@@ -635,6 +661,25 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 						errors.As(fwdErr, &ue)
 						lastErr = ue
 						break
+					}
+					if attempt, refused := providerLimitRefusal(fwdErr); refused {
+						// A provider at its own capacity is neither an account
+						// fault nor a bad model: cooling the connection down
+						// would park a healthy account, and the next candidate
+						// may be free. Keep the refusal as the terminal error for
+						// when none is left.
+						log.Info("combo", "provider limit, next candidate",
+							"provider", modelInfo.Provider, "model", modelInfo.Model,
+							"axis", attempt.Axis, "conn", connID)
+						var refusedErr *upstreamError
+						errors.As(fwdErr, &refusedErr)
+						if refusedErr != nil {
+							lastErr = refusedErr
+						}
+						if isKnownNoAuth {
+							break
+						}
+						continue
 					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {
@@ -770,11 +815,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 			excludeIDs = nil
 		}
 
-		for _, entry := range models {
+		for i, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
 				continue
 			}
+			isLastModel := i == len(models)-1
 
 			// Skip unavailable (model-locked) providers
 			if !h.Repo.IsProviderAvailable(modelInfo.Provider, modelInfo.Model) {
@@ -803,6 +849,15 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					var err error
 					picked, cData, err = h.getBestConnectionWithContext(ctx, modelInfo.Provider, modelInfo.ConnectionID, excludeIDs, modelInfo.Model)
 					if err != nil {
+						if refusal, blocked := providerLimitRefusal(err); blocked {
+							log.Info("combo", "provider node unusable, next candidate",
+								"provider", modelInfo.Provider, "model", modelInfo.Model, "axis", refusal.Axis)
+							var refusedErr *upstreamError
+							errors.As(err, &refusedErr)
+							if refusedErr != nil {
+								lastErr = refusedErr
+							}
+						}
 						break
 					}
 					connID = picked.ID
@@ -833,8 +888,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 					break
 				}
 
+				fwdCtx := ctx
+				if !isStream {
+					fwdCtx = internalproxy.WithZeroContentProbe(ctx, !isLastModel)
+				}
 				fwdErr := h.tryForwardWithConnection(forwardRequestParams{
-					Ctx: ctx, W: cw, Provider: modelInfo.Provider, Model: modelInfo.Model,
+					Ctx: fwdCtx, W: cw, Provider: modelInfo.Provider, Model: modelInfo.Model,
 					RequestedModel: comboName, ComboName: comboName,
 					ConnectionID: connID, ConnName: connObjName(picked), ConnEmail: connObjEmail(picked),
 					ConnData: connData, Body: upstreamJSON,
@@ -843,6 +902,12 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 				})
 
 				if fwdErr != nil {
+					var zcErr *internalproxy.ZeroContentError
+					if errors.As(fwdErr, &zcErr) {
+						log.Warn("combo", "zero usable content, falling back to next model", "provider", modelInfo.Provider, "model", modelInfo.Model)
+						lastErr = &upstreamError{StatusCode: http.StatusOK, Body: zcErr.Body}
+						break
+					}
 					if ctx.Err() != nil {
 						lastErr = &upstreamError{StatusCode: StatusClientClosedRequest, Body: []byte(clientClosedBody)}
 						break
@@ -855,6 +920,23 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 						errors.As(fwdErr, &blocked)
 						lastErr = blocked
 						break
+					}
+					if attempt, refused := providerLimitRefusal(fwdErr); refused {
+						// Same contract as the OpenAI loop: the endpoint is busy,
+						// so the next candidate is tried without a cooldown on an
+						// account that did nothing wrong.
+						log.Info("combo", "provider limit, next candidate",
+							"provider", modelInfo.Provider, "model", modelInfo.Model,
+							"axis", attempt.Axis, "conn", connID)
+						var refusedErr *upstreamError
+						errors.As(fwdErr, &refusedErr)
+						if refusedErr != nil {
+							lastErr = refusedErr
+						}
+						if isKnownNoAuth {
+							break
+						}
+						continue
 					}
 					var ue *upstreamError
 					if errors.As(fwdErr, &ue) {

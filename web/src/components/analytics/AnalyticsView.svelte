@@ -26,6 +26,8 @@
   import UsageChart from './UsageChart.svelte'
   import ProviderTopologyCard from './ProviderTopologyCard.svelte'
   import ComboFlowCard from './ComboFlowCard.svelte'
+  import Card from '../../lib/ui/Card.svelte'
+  import { isComboFlowVisible, isUsageTrendVisible } from '../../lib/displayPrefs'
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   interface Props {
     connections?: ProviderConnection[]
@@ -47,6 +49,31 @@
   let section = $state<UsageSection>(USAGE_SECTION_BY_TAB[tab] ?? 'overview')
   let period = $state<Period>('today')
   let isFetching = $state(false)
+
+  // The two panels at the end of the Overview start collapsed, unlike the
+  // Details panels: they are extra reading below the fold, not the section's
+  // subject. Settings > Display hides each one outright instead.
+  let comboFlowOpen = $state(false)
+  let usageTrendOpen = $state(false)
+  let showComboFlow = $state(isComboFlowVisible())
+  let showUsageTrend = $state(isUsageTrendVisible())
+
+  $effect(() => {
+    const onPrefsChange = () => {
+      showComboFlow = isComboFlowVisible()
+      showUsageTrend = isUsageTrendVisible()
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('display-prefs-changed', onPrefsChange)
+      window.addEventListener('storage', onPrefsChange)
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('display-prefs-changed', onPrefsChange)
+        window.removeEventListener('storage', onPrefsChange)
+      }
+    }
+  })
 
   // Choosing a section has to move the URL when that section owns one, or the
   // next reload silently drops back to Overview.
@@ -169,7 +196,12 @@
   })
 
   // Loaded once: editing a combo is rare, and a reload picks up the change.
+  // Skipped entirely when Combo flow is disabled in Settings > Display.
   $effect(() => {
+    if (!showComboFlow) {
+      comboDefs = []
+      return
+    }
     let cancelled = false
     api
       .getCombos()
@@ -416,6 +448,47 @@
   <SectionMenu {section} onSectionChange={(next) => (section = next)} />
 {/snippet}
 
+<!-- Both Overview panels are collapsed by default and say so with a chevron,
+     the same affordance UsageDashboard uses for its own detail panels. -->
+{#snippet comboFlowIcon()}
+  <span class="material-symbols-outlined text-[18px]" aria-hidden="true">account_tree</span>
+{/snippet}
+{#snippet comboFlowToggle()}
+  <button
+    type="button"
+    aria-expanded={comboFlowOpen}
+    aria-label="Toggle Combo flow"
+    onclick={() => (comboFlowOpen = !comboFlowOpen)}
+    class="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
+  >
+    <span
+      class="material-symbols-outlined text-[18px] transition-transform duration-200"
+      style:transform={comboFlowOpen ? 'rotate(180deg)' : 'rotate(0deg)'}
+    >
+      expand_more
+    </span>
+  </button>
+{/snippet}
+{#snippet usageTrendIcon()}
+  <span class="material-symbols-outlined text-[18px]" aria-hidden="true">monitoring</span>
+{/snippet}
+{#snippet usageTrendToggle()}
+  <button
+    type="button"
+    aria-expanded={usageTrendOpen}
+    aria-label="Toggle Usage trend"
+    onclick={() => (usageTrendOpen = !usageTrendOpen)}
+    class="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
+  >
+    <span
+      class="material-symbols-outlined text-[18px] transition-transform duration-200"
+      style:transform={usageTrendOpen ? 'rotate(180deg)' : 'rotate(0deg)'}
+    >
+      expand_more
+    </span>
+  </button>
+{/snippet}
+
 
 <div class="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
   <!-- The section picker and the window selector the Overview needs. Cache
@@ -461,15 +534,6 @@
   {#if section === 'overview'}
     <!-- 5 Overview KPI Cards -->
     <SummaryKpiCards {stats} />
-
-    <!-- Combo flow: router -> combo -> members, only while a combo is in use
-         (or just finished). The provider map below keeps its own animation. -->
-    <ComboFlowCard
-      combos={comboDefs}
-      {activeRequests}
-      recentRequests={stats.recentRequests || []}
-      {errorProvider}
-    />
 
     <!-- Topology + Recent Requests -->
     <div class="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
@@ -533,11 +597,31 @@
       </div>
     </div>
 
-    <!-- Usage trend visualization, under Recent Requests and above the usage filter -->
-    <UsageChart {period} />
-
     <!-- Breakdown Table -->
     <UsageBreakdownTable {stats} />
+
+    <!-- Combo flow: router -> combo -> members, only while a combo is in use
+         (or just finished). The provider map above keeps its own animation. -->
+    {#if showComboFlow}
+      <Card padding="md" title="Combo flow" icon={comboFlowIcon} action={comboFlowToggle}>
+        {#if comboFlowOpen}
+          <ComboFlowCard
+            combos={comboDefs}
+            {activeRequests}
+            recentRequests={stats.recentRequests || []}
+            {errorProvider}
+          />
+        {/if}
+      </Card>
+    {/if}
+
+    {#if showUsageTrend}
+      <Card padding="md" title="Usage trend" icon={usageTrendIcon} action={usageTrendToggle}>
+        {#if usageTrendOpen}
+          <UsageChart {period} />
+        {/if}
+      </Card>
+    {/if}
   {:else if section === 'cache'}
     <CacheAnalyticsView>
       {#snippet headerLeft()}

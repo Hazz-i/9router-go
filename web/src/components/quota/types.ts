@@ -434,10 +434,11 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
       case 'antigravity':
         if (d.quotas) {
           const entries = Object.entries(d.quotas)
-          const weeklyKeys = new Set(['gemini_weekly', 'claude_gpt_weekly'])
-          const sessionKeys = new Set(['gemini_session', 'claude_gpt_session'])
+          const weeklyKeys = new Set(['gemini_weekly', 'claude_gpt_weekly', 'argon_weekly'])
+          const sessionKeys = new Set(['gemini_session', 'claude_gpt_session', 'argon_session'])
           const summaryKeys = new Set([...weeklyKeys, ...sessionKeys])
-          const geminiModels = entries.filter(([k]) => k.startsWith('gemini-') && !k.includes('image'))
+          const geminiModels = entries.filter(([k]) => k.startsWith('gemini-') && !k.includes('image') && !k.includes('argon'))
+          const argonModels = entries.filter(([k]) => k.includes('argon'))
           const claudeModels = entries.filter(([k]) => k.startsWith('claude-'))
           const imageModels = entries.filter(([k]) => k.includes('image'))
           const summaryModels = entries.filter(([k]) => summaryKeys.has(k))
@@ -446,11 +447,14 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
               !k.startsWith('gemini-') &&
               !k.startsWith('claude-') &&
               !k.includes('image') &&
+              !k.includes('argon') &&
               !summaryKeys.has(k),
           )
 
           const hasGeminiWeekly = Boolean(d.quotas.gemini_weekly)
           const hasGeminiSession = Boolean(d.quotas.gemini_session)
+          const hasArgonWeekly = Boolean(d.quotas.argon_weekly)
+          const hasArgonSession = Boolean(d.quotas.argon_session)
           const hasClaudeWeekly = Boolean(d.quotas.claude_gpt_weekly)
           const hasClaudeSession = Boolean(d.quotas.claude_gpt_session)
 
@@ -505,7 +509,58 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
               })
           }
 
-          // 2. Claude & GPT Family
+          // 2. Gemini 4 Argon Family
+          if (hasArgonSession) {
+            summaryModels
+              .filter(([k]) => k === 'argon_session')
+              .forEach(([modelKey, quota]) => {
+                normalizedQuotas.push({
+                  name: (quota.displayName as string) || modelKey,
+                  modelKey,
+                  used: Number(quota.used) || 0,
+                  total: Number(quota.total) || 0,
+                  resetAt: (quota.resetAt as string) || null,
+                  remainingPercentage: quota.remainingPercentage !== undefined ? Number(quota.remainingPercentage) : undefined,
+                  window: (quota.window as string) || (modelKey.includes('weekly') ? 'weekly' : '5h'),
+                })
+              })
+          } else if (argonModels.length > 0) {
+            const rep = argonModels.reduce((min, cur) =>
+              (cur[1].remainingPercentage as number ?? 100) < (min[1].remainingPercentage as number ?? 100) ? cur : min,
+            )[1]
+            const weeklyResetAt = d.quotas.argon_weekly?.resetAt
+            const isDuplicateOfWeekly =
+              hasArgonWeekly && rep.resetAt === weeklyResetAt && (rep.remainingPercentage ?? 0) === 0
+            if (!isDuplicateOfWeekly) {
+              normalizedQuotas.push({
+                name: 'Gemini 4 Argon',
+                modelKey: 'gemini-4-argon',
+                used: Number(rep.used) || 0,
+                total: Number(rep.total) || 0,
+                resetAt: (rep.resetAt as string) || null,
+                remainingPercentage: rep.remainingPercentage !== undefined ? Number(rep.remainingPercentage) : undefined,
+              })
+            }
+          }
+
+          // Show Argon weekly row if present
+          if (hasArgonWeekly) {
+            summaryModels
+              .filter(([k]) => k === 'argon_weekly')
+              .forEach(([modelKey, quota]) => {
+                normalizedQuotas.push({
+                  name: (quota.displayName as string) || modelKey,
+                  modelKey,
+                  used: Number(quota.used) || 0,
+                  total: Number(quota.total) || 0,
+                  resetAt: (quota.resetAt as string) || null,
+                  remainingPercentage: quota.remainingPercentage !== undefined ? Number(quota.remainingPercentage) : undefined,
+                  window: (quota.window as string) || (modelKey.includes('weekly') ? 'weekly' : '5h'),
+                })
+              })
+          }
+
+          // 3. Claude & GPT Family
           if (hasClaudeSession) {
             summaryModels
               .filter(([k]) => k === 'claude_gpt_session')
@@ -812,6 +867,36 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
             if (quota.isCreditBalance !== undefined) row.isCreditBalance = Boolean(quota.isCreditBalance)
             if (quota.currency !== undefined) row.currency = String(quota.currency)
             if (quota.message !== undefined) row.message = String(quota.message)
+            normalizedQuotas.push(row)
+          })
+        }
+        break
+
+      case 'gemini-web':
+        // The site publishes two windows: a rolling five-hour one and a
+        // weekly pool. The order is fixed here because the gateway's map has
+        // no order of its own, and a table whose rows move between refreshes
+        // reads as a bug.
+        if (d.quotas) {
+          const GEMINI_WEB_QUOTA_ORDER = ['5h', 'weekly']
+          const entries = Object.entries(d.quotas).sort(([a], [b]) => {
+            const ia = GEMINI_WEB_QUOTA_ORDER.indexOf(a)
+            const ib = GEMINI_WEB_QUOTA_ORDER.indexOf(b)
+            return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib)
+          })
+          entries.forEach(([name, quota]) => {
+            const row: NormalizedQuota = {
+              name: (quota.displayName as string) || name,
+              modelKey: name,
+              used: Number(quota.used) || 0,
+              total: Number(quota.total) || 0,
+              resetAt: (quota.resetAt as string) || null,
+            }
+            if (quota.remaining !== undefined) row.remaining = Number(quota.remaining)
+            if (quota.remainingPercentage !== undefined) {
+              row.remainingPercentage = Number(quota.remainingPercentage)
+            }
+            if (quota.unlimited !== undefined) row.unlimited = Boolean(quota.unlimited)
             normalizedQuotas.push(row)
           })
         }

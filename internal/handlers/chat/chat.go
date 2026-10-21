@@ -79,6 +79,10 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	// Provider-scope limit state travels with the request: what one attempt
+	// learns (this provider is full) must steer the next one, and must not
+	// outlive the request (docs/provider-limits-plan.md D7).
+	ctx = withProviderLimitState(ctx)
 	ctx = handlerutil.WithClientAnthropicBeta(ctx, r.Header.Get("anthropic-beta"))
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
 	// Record the dispatching key so the outbound guardrail tap can resolve the
@@ -201,6 +205,16 @@ func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWrit
 		var ue *upstreamError
 		if errors.As(result, &ue) {
 			cw.Header().Set("Content-Type", "application/json")
+			// Forward only Retry-After. ue.Header can also carry the failed
+			// upstream response's own framing headers (Content-Length,
+			// Transfer-Encoding); copying those makes the reply advertise a
+			// body length that does not match what we write, and the client
+			// sees the response truncated. Retry-After is the one header a
+			// caller needs to know when to come back after a temporary
+			// condition, and we set it ourselves.
+			if ra := ue.Header.Get("Retry-After"); ra != "" {
+				cw.Header().Set("Retry-After", ra)
+			}
 			cw.WriteHeader(ue.StatusCode)
 			cw.Write(ue.Body)
 			return
@@ -286,6 +300,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	workingBody["stream"] = reqBody.Stream
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx = withProviderLimitState(ctx)
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
 	// Record the dispatching key so the outbound guardrail tap can resolve the
 	// policy scoped to it. A keyless caller leaves it unset and the tap stays
@@ -344,6 +359,16 @@ func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.Resp
 		var ue *upstreamError
 		if errors.As(result, &ue) {
 			cw.Header().Set("Content-Type", "application/json")
+			// Forward only Retry-After. ue.Header can also carry the failed
+			// upstream response's own framing headers (Content-Length,
+			// Transfer-Encoding); copying those makes the reply advertise a
+			// body length that does not match what we write, and the client
+			// sees the response truncated. Retry-After is the one header a
+			// caller needs to know when to come back after a temporary
+			// condition, and we set it ourselves.
+			if ra := ue.Header.Get("Retry-After"); ra != "" {
+				cw.Header().Set("Retry-After", ra)
+			}
 			cw.WriteHeader(ue.StatusCode)
 			cw.Write(ue.Body)
 			return

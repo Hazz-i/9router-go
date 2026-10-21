@@ -104,6 +104,13 @@ func (h *DashboardHandler) HandleUpdateSettings(w http.ResponseWriter, r *http.R
 		}
 	}
 
+	// Feature Visibility stores sidebar ids, so the payload is normalized here:
+	// the sidebar must never receive an id it cannot address (navvisibility.go).
+	applyNavVisibilityUpdate(updates)
+	// Display currency stores a code plus a rate table, so the payload is
+	// normalized here: a cost surface must never read a NaN rate (currency.go).
+	applyDisplayCurrencyUpdate(updates)
+
 	if err := h.Repo.UpdateSettingsRaw(updates); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -385,6 +392,8 @@ func sanitizeSettings(raw map[string]any) map[string]any {
 	for _, key := range secretSettingKeys {
 		delete(out, key)
 	}
+	sanitizeNavVisibility(out)
+	sanitizeDisplayCurrency(out)
 	out["hasPassword"] = hasPassword
 	return out
 }
@@ -477,11 +486,20 @@ func (h *DashboardHandler) exportDatabase() (*databaseExport, error) {
 	}
 
 	if out.ProviderNodes, err = selectRows(db,
-		`SELECT id, type, name, data, createdAt, updatedAt FROM providerNodes`); err != nil {
+		`SELECT id, type, name, data, createdAt, updatedAt,
+		        rpmLimit, tpmLimit, concurrencyLimit, tokenQuota, queueTimeoutMs, quotaResetId,
+		        COALESCE(contractExpiresAt, '') AS contractExpiresAt
+		   FROM providerNodes`); err != nil {
 		return nil, err
 	}
 	for _, row := range out.ProviderNodes {
-		mergeDataColumn(row, "id", "type", "name", "createdAt", "updatedAt")
+		// The limit columns are real columns, so mergeDataColumn needs them named
+		// as well: it rebuilds each row from the data blob overlaid with the listed
+		// columns, and a column named in neither place would drop out of the backup
+		// while the restore still looked successful.
+		mergeDataColumn(row, "id", "type", "name", "createdAt", "updatedAt",
+			"rpmLimit", "tpmLimit", "concurrencyLimit", "tokenQuota", "queueTimeoutMs",
+			"quotaResetId", "contractExpiresAt")
 	}
 
 	if out.ProxyPools, err = selectRows(db,
@@ -623,11 +641,26 @@ func (h *DashboardHandler) importDatabase(payload map[string]any) error {
 		if !ok {
 			continue
 		}
-		data := restData(n, "id", "type", "name", "createdAt", "updatedAt")
+		// A restored node must come back with the limits it had: a backup that
+		// silently lifted a node's ceiling would turn disaster recovery into an
+		// accidental opening of the throttle, the same reason apiKeys carries its
+		// own limits below. quotaResetId travels too — it is the mark the lifetime
+		// quota is measured from, and restoring the spend without the mark would
+		// charge the node for tokens it had already been forgiven.
+		data := restData(n, "id", "type", "name", "createdAt", "updatedAt",
+			"rpmLimit", "tpmLimit", "concurrencyLimit", "tokenQuota", "queueTimeoutMs",
+			"quotaResetId", "contractExpiresAt")
 		if _, err := tx.Exec(
-			`INSERT OR REPLACE INTO providerNodes(id, type, name, data, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+			`INSERT OR REPLACE INTO providerNodes(id, type, name, data, createdAt, updatedAt,
+			        rpmLimit, tpmLimit, concurrencyLimit, tokenQuota, queueTimeoutMs, quotaResetId,
+			        contractExpiresAt)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			n["id"], stringDefault(n["type"], nil), stringDefault(n["name"], nil), data,
 			stringDefault(n["createdAt"], nowISO()), stringDefault(n["updatedAt"], nowISO()),
+			intDefault(n["rpmLimit"], 0), intDefault(n["tpmLimit"], 0),
+			intDefault(n["concurrencyLimit"], 0), intDefault(n["tokenQuota"], 0),
+			intDefault(n["queueTimeoutMs"], 0), intDefault(n["quotaResetId"], 0),
+			stringDefault(n["contractExpiresAt"], ""),
 		); err != nil {
 			return err
 		}

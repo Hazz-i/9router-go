@@ -235,9 +235,25 @@ var (
 	harnessBrandOMP             = regexp.MustCompile(`(?i)Oh My Pi`)
 	harnessBrandOMPLive         = regexp.MustCompile(`(?i)omp Live`)
 	claudeBillingHeaderRegex    = regexp.MustCompile(`(?im)^x-anthropic-billing-header:[^\n]*(?:\r?\n)*`)
-	hermesIdentityRegex         = regexp.MustCompile(`(?i)You are Hermes Agent,\s*(an intelligent AI assistant)(?: created by Nous Research)?\.`)
+	// antigravityOpenCodeRegex matches the literal `opencode` provider
+	// identifier upstream rewrites in the system instruction. Upstream's rule
+	// is unbounded and case-insensitive, so `opencode-zen` and
+	// `.config/opencode/` are rewritten too (parity with decolua/9router
+	// open-sse/config/appConstants.js:194).
+	antigravityOpenCodeRegex = regexp.MustCompile(`(?i)opencode`)
+	// hermesIdentityRegex matches every Hermes identity variant upstream
+	// rewrites, and the whole match is replaced by a neutral sentence. The
+	// legacy rule only matched one exact phrasing, so the other variants
+	// reached the Antigravity backend with the fingerprint intact and could
+	// trigger a fake 429 RESOURCE_EXHAUSTED (parity with decolua/9router
+	// commit a61fc6a0).
+	//
+	// The upstream expression is transliterated exactly, including the
+	// literal single space in "Nous Research" — upstream does not accept
+	// other whitespace between the two words, and a port that accepted more
+	// would rewrite phrasings upstream leaves alone.
+	hermesIdentityRegex = regexp.MustCompile(`(?i)You are Hermes(?: Agent)?(?:,\s*(?:an intelligent AI assistant|an AI assistant|an AI agent))?(?:,?\s*(?:built|created)\s+by\s+Nous Research)?\.`)
 )
-var opencodeRegex = regexp.MustCompile(`(?i)\bopencode\b`)
 
 // normalizeHarnessMarkers neutralizes harness fingerprint tags in system text.
 // Bodies are preserved; only the marker names change.
@@ -255,20 +271,13 @@ func rewriteCompetingBranding(text string) string {
 	return rewriteBrandingText(text, true)
 }
 
-// rewriteBrandingText applies competitive-prompt rewrites. Harness markers
-// (tags + branding) are fingerprints of system-instruction text only;
-// user/model messages, tool definitions, arguments, and results keep the
-// existing Claude-SDK + opencode handling and are never harness-normalized.
-func rewriteBrandingText(text string, isSystemInstruction bool) string {
-	for _, phrase := range competitivePromptBlacklist {
-		text = strings.ReplaceAll(text, phrase, "")
-	}
-	text = claudeBillingHeaderRegex.ReplaceAllString(text, "")
-	text = hermesIdentityRegex.ReplaceAllString(text, "You are Hermes Agent. You are ${1}.")
-	if isSystemInstruction {
-		text = normalizeHarnessMarkers(text)
-	}
-	text = opencodeRegex.ReplaceAllStringFunc(text, func(m string) string {
+// rewriteAntigravityBrand rewrites the literal `opencode` provider
+// identifier to `antigravity`, matching upstream's fourth row of
+// ANTIGRAVITY_PROMPT_REWRITES (decolua/9router
+// open-sse/config/appConstants.js:194). Upstream's replacement preserves the
+// three capitalisations it names and lowercases everything else.
+func rewriteAntigravityBrand(text string) string {
+	return antigravityOpenCodeRegex.ReplaceAllStringFunc(text, func(m string) string {
 		switch m {
 		case "OpenCode":
 			return "Antigravity"
@@ -278,6 +287,26 @@ func rewriteBrandingText(text string, isSystemInstruction bool) string {
 			return "antigravity"
 		}
 	})
+}
+
+// rewriteBrandingText applies competitive-prompt rewrites. Harness markers
+// (tags + branding) are fingerprints of system-instruction text only;
+// user/model messages, tool definitions, arguments, and results keep the
+// existing competitive blacklist handling and are never harness-normalized.
+func rewriteBrandingText(text string, isSystemInstruction bool) string {
+	for _, phrase := range competitivePromptBlacklist {
+		text = strings.ReplaceAll(text, phrase, "")
+	}
+	text = claudeBillingHeaderRegex.ReplaceAllString(text, "")
+	text = hermesIdentityRegex.ReplaceAllString(text, "You are an AI assistant.")
+	if isSystemInstruction {
+		text = normalizeHarnessMarkers(text)
+		// Upstream applies this row to the system instruction only: the
+		// caller brands its own client there, and the backend flags
+		// competing-client branding with a fake 429 Quota Exhausted. The
+		// conversation keeps the caller's vocabulary.
+		text = rewriteAntigravityBrand(text)
+	}
 	return strings.TrimSpace(text)
 }
 
@@ -342,6 +371,11 @@ func StripCompetitivePrompts(req *GeminiRequest) *GeminiRequest {
 // this value, so it must stay family-shaped. Only AntigravityUpstreamModel
 // applies the effort suffix the backend actually needs.
 var AntigravityModelSynonyms = map[string]string{
+	// Gemini 4 Argon serves one backend id per tier; the bare catalog id is medium tier.
+	"gemini-4-argon":        "gemini-4-argon-medium",
+	"gemini-4-argon-high":   "gemini-4-argon-high",
+	"gemini-4-argon-medium": "gemini-4-argon-medium",
+	"gemini-4-argon-low":    "gemini-4-argon-low",
 	// Upstream decolua/9router#24034f69 retired the gemini-3.5 family and
 	// gemini-3-flash; the default moved to the 3.8 medium tier.
 	"gemini-default":             "gemini-3.8-flash-medium",
@@ -408,6 +442,11 @@ func NormalizeAntigravityModel(model string) string {
 // decolua/9router#a07ed95b, refreshed by #24034f69). Every value was probed
 // live against daily-cloudcode-pa.googleapis.com on 2026-10-09.
 var antigravityUpstreamModelIDs = map[string]string{
+	// Gemini 4 Argon serves one backend id per tier; the bare catalog id is medium tier.
+	"gemini-4-argon":        "gemini-4-argon-medium",
+	"gemini-4-argon-high":   "gemini-4-argon-high",
+	"gemini-4-argon-medium": "gemini-4-argon-medium",
+	"gemini-4-argon-low":    "gemini-4-argon-low",
 	// The 3.8 family serves one backend id per tier. The bare catalog id is
 	// the medium tier.
 	"gemini-3.8-flash":        "gemini-3.8-flash-medium",
@@ -628,7 +667,7 @@ func replaceThoughtSignaturesRecursive(v any, replacement string) {
 // fixup: role correction for functionResponse, stripping of thought-only parts
 // that Gemini 3 rejects, and backfilling of thoughtSignature on functionCall
 // parts (parity with open-sse/executors/antigravity.js).
-func fixAntigravityContents(req *GeminiRequest) bool {
+func fixAntigravityContents(req *GeminiRequest, model string) bool {
 	if req == nil || len(req.Contents) == 0 {
 		return false
 	}
@@ -685,7 +724,7 @@ func fixAntigravityContents(req *GeminiRequest) bool {
 		}
 		fixed[i] = GeminiContent{Role: role, Parts: filtered}
 	}
-	normalized := NormalizeGeminiContents(fixed)
+	normalized := NormalizeGeminiContentsForModel(fixed, model)
 	if changed || len(normalized) != len(req.Contents) {
 		req.Contents = normalized
 		return true
@@ -706,7 +745,7 @@ func WrapForAntigravity(geminiBody []byte, projectID, modelName string) ([]byte,
 	var geminiReq GeminiRequest
 	if err := json.Unmarshal(geminiBody, &geminiReq); err == nil {
 		contentCount = len(geminiReq.Contents)
-		fixAntigravityContents(&geminiReq)
+		fixAntigravityContents(&geminiReq, modelName)
 		cleanedReq := StripCompetitivePrompts(&geminiReq)
 		if len(cleanedReq.Tools) > 0 {
 			cloaked, _ := CloakAntigravityRequest(cleanedReq, "")

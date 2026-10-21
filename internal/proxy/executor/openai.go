@@ -214,7 +214,7 @@ func sseStream(o sseStreamOpts) error {
 		})
 	}
 
-	sessionKey := fmt.Sprintf("stream-%d", time.Now().UnixNano())
+	sessionKey := translator.NewSessionKey("stream")
 	defer translator.ClearStreamState(sessionKey)
 	finished := false
 	err := proxy.ScanStream(upstream, func(chunk []byte) {
@@ -299,11 +299,12 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 		body = folded
 	}
 
-	// A 200 that carries no completion (blank body, HTML error page, a
-	// `{"error": ...}` envelope, a choice with empty content) reads to every
-	// layer above as a served turn, which both ends combo fallback and
-	// clears the account cooldown. Report it as the 502 it is.
-	if err := proxy.EmptyUpstreamError(body); err != nil {
+	if armed, canFallback := proxy.ZeroContentProbe(ctx); armed && proxy.IsZeroContentResponse(body) {
+		if canFallback {
+			return &proxy.ZeroContentError{Body: body}
+		}
+		// The last member of a combo serves its zero-content response normally (FR3).
+	} else if err := proxy.EmptyUpstreamError(body); err != nil {
 		return err
 	}
 
@@ -387,4 +388,3 @@ func sseDataFrames(body []byte) [][]byte {
 	}
 	return frames
 }
-

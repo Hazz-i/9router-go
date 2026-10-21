@@ -1,12 +1,11 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import {
     AlertCircle,
     Check,
+    Coins,
     Database,
     Download,
-    Eye,
-    EyeOff,
     Key,
     Laptop,
     Loader2,
@@ -26,6 +25,25 @@
   import Input from '../lib/ui/Input.svelte'
   import { api, getAuthHeaders, responseErrorMessage, type DatabaseStats, type Settings } from '../api/client'
   import { isCompactUnitsEnabled, setCompactUnits } from '../lib/compactNumber'
+  import {
+    isComboFlowVisible,
+    isDetailsExpandedByDefault,
+    isUsageTrendVisible,
+    setComboFlowVisible,
+    setDetailsExpandedByDefault,
+    setUsageTrendVisible
+  } from '../lib/displayPrefs'
+  import { TOGGLEABLE_NAV_ENTRIES, orderHiddenNav, setNavVisible } from '../lib/nav'
+  import {
+    CURRENCY_CATALOG,
+    DEFAULT_RATES,
+    describeRates,
+    describeRefreshRates,
+    formatCost,
+    normalizeDisplayCurrency,
+    type DisplayCurrency
+  } from '../lib/currency'
+  import { setDisplayCurrency } from '../lib/currency.svelte'
 
   interface Props {
     settings?: Settings
@@ -44,10 +62,11 @@
   let observabilityMode = $state<'full' | 'errors_only' | 'off'>('full')
   let retentionDays = $state<number>(7)
   let maxRequestRecords = $state<number>(5000)
+  let usageHistoryRetentionDays = $state<number>(0)
   let dbStats = $state<DatabaseStats | null>(null)
   let isPruning = $state(false)
+  let isPruningUsage = $state(false)
   let isVacuuming = $state(false)
-
   // Global System Prompt State
   let enableSystemPrompt = $state(false)
   let systemPromptPrefix = $state('')
@@ -62,9 +81,32 @@
   // Unit abbreviation is a localStorage-only preference (compactUnits key);
   // there is no server-side setting for it.
   let compactUnits = $state(isCompactUnitsEnabled())
+  // Usage detail panels (Activity Heatmap, Node Health) start collapsed; the
+  // switch below flips that default (detailsExpandedByDefault, localStorage).
+  let detailsExpanded = $state(isDetailsExpandedByDefault())
+  // The two optional Overview panels are visible by default; these switches
+  // take them out of the section (showComboFlow / showUsageTrend, localStorage).
+  let comboFlow = $state(isComboFlowVisible())
+  let usageTrend = $state(isUsageTrendVisible())
   let stickyRoundRobinLimit = $state(3)
   let comboStrategy = $state('first-model')
   let forceFallback = $state(false)
+
+  // Feature Visibility: ids of the sidebar entries this deployment hides. The
+  // entry list itself lives in web/src/lib/nav.ts, shared with the sidebar.
+  let hiddenNav = $state<string[]>([])
+  // A visibility change is not saved until the operator presses Save, so the
+  // button is offered on its own for a few seconds after a change.
+  let showSaveHint = $state(false)
+  let saveHintTimer: ReturnType<typeof setTimeout> | null = null
+  // Currency & rates: the display currency every cost surface reads. The catalog
+  // and the formatting rules live in web/src/lib/currency.ts.
+  let currencyCode = $state('USD')
+  let currencyRates = $state<Record<string, number>>({})
+  let currencyShowBoth = $state(false)
+  let currencyUpdatedAt = $state<string | undefined>(undefined)
+  let isRefreshingRates = $state(false)
+  let ratesMessage = $state<string | null>(null)
 
   // Password Management State
   let currentPassword = $state('')
@@ -108,6 +150,9 @@
       }
       if (typeof settings.retentionDays === 'number') retentionDays = settings.retentionDays
       if (typeof settings.maxRequestRecords === 'number') maxRequestRecords = settings.maxRequestRecords
+      if (typeof settings.usageHistoryRetentionDays === 'number') {
+        usageHistoryRetentionDays = settings.usageHistoryRetentionDays
+      }
       if (typeof settings.sessionTimeout === 'string') sessionTimeout = settings.sessionTimeout
       if (typeof settings.fallbackStrategy === 'string') fallbackStrategy = settings.fallbackStrategy
       if (typeof settings.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = settings.stickyRoundRobinLimit
@@ -130,6 +175,11 @@
       if (typeof settings.samlIssuer === 'string') samlIssuer = settings.samlIssuer
       if (typeof settings.samlCert === 'string') samlCert = settings.samlCert
       if (typeof settings.samlLoginLabel === 'string') samlLoginLabel = settings.samlLoginLabel
+
+      // Feature Visibility
+      hiddenNav = orderHiddenNav(settings.navVisibility)
+      // Currency
+      applyCurrency(settings.displayCurrency)
     }
   })
 
@@ -142,6 +192,8 @@
         if (s.sessionTimeout) sessionTimeout = String(s.sessionTimeout)
         if (s.fallbackStrategy) fallbackStrategy = String(s.fallbackStrategy)
         if (typeof s.stickyRoundRobinLimit === 'number') stickyRoundRobinLimit = s.stickyRoundRobinLimit
+        // Feature Visibility
+        hiddenNav = orderHiddenNav(s.navVisibility)
         if (s.comboStrategy) comboStrategy = String(s.comboStrategy)
         if (typeof s.forceFallback === 'boolean') forceFallback = s.forceFallback
         enableSystemPrompt = !!s.systemPromptEnabled
@@ -158,6 +210,7 @@
         if (s.samlIssuer) samlIssuer = String(s.samlIssuer)
         if (s.samlCert) samlCert = String(s.samlCert)
         if (s.samlLoginLabel) samlLoginLabel = String(s.samlLoginLabel)
+        applyCurrency(s.displayCurrency)
       }
     } catch {
       // silent
@@ -166,6 +219,11 @@
 
   onMount(() => {
     loadSettings()
+    // The storage card below renders its numbers and its actions from dbStats, so
+    // it stays empty (and the ledger row count and prune button stay hidden)
+    // until something asks for them. Without this the operator has to press a
+    // button that is not on the page yet in order to see the page.
+    loadDbStats()
   })
 
   /** Fills the suffix with the code-integrity rule. The prefix keeps whatever the operator wrote:
@@ -173,6 +231,99 @@
   function loadAntiPoisoningPreset() {
     systemPromptSuffix = ANTI_POISONING_PRESET
     enableSystemPrompt = true
+  }
+
+  /** Offers the save button for a few seconds after a visibility change. */
+  function markUnsaved() {
+    showSaveHint = true
+    if (saveHintTimer) clearTimeout(saveHintTimer)
+    saveHintTimer = setTimeout(() => (showSaveHint = false), 4000)
+  }
+
+  onDestroy(() => {
+    if (saveHintTimer) clearTimeout(saveHintTimer)
+  })
+
+  /**
+   * Any edit in the settings form raises the save reminder. Controls that save
+   * themselves opt out with data-save-hint="off": the Display card, whose
+   * preferences live in localStorage, the password form, the backup file
+   * picker, and the backup password dialog.
+   *
+   * The switches are <button role="switch">, so they emit click rather than
+   * input/change; every other button in the form either saves on its own or
+   * opens a dialog, so only a switch click counts.
+   */
+  function handleSettingsInput(event: Event) {
+    const target = event.target as HTMLElement | null
+    if (target?.closest('[data-save-hint="off"]')) return
+    if (event.type === 'click' && !target?.closest('button[role="switch"]')) return
+    markUnsaved()
+  }
+
+  /** Pushes the stored currency setting into the panel's fields and the store. */
+  function applyCurrency(value: unknown) {
+    const normalized = normalizeDisplayCurrency(value)
+    currencyCode = normalized.code
+    currencyRates = { ...normalized.rates }
+    currencyShowBoth = normalized.showBoth
+    currencyUpdatedAt = normalized.updatedAt
+    setDisplayCurrency(normalized)
+  }
+
+  /** The object this panel saves, and the one the cost surfaces read. */
+  function currencySetting(): DisplayCurrency {
+    return {
+      code: currencyCode,
+      rates: currencyRates,
+      showBoth: currencyShowBoth,
+      ...(currencyUpdatedAt ? { updatedAt: currencyUpdatedAt } : {}),
+    }
+  }
+
+  /** An emptied field drops the rate, so the seed shows through again. */
+  function setRate(code: string, raw: string) {
+    if (raw === '') {
+      const next = { ...currencyRates }
+      delete next[code]
+      currencyRates = next
+      return
+    }
+    const value = Number(raw)
+    if (!Number.isFinite(value) || value <= 0) return
+    currencyRates = { ...currencyRates, [code]: value }
+  }
+
+  /**
+   * Asks the server for the live rates the catalog cares about. A failure leaves
+   * the manual table untouched — it is a refresh, never a clear.
+   */
+  async function refreshRates() {
+    isRefreshingRates = true
+    ratesMessage = null
+    try {
+      const result = await api.refreshCurrencyRates({
+        code: currencyCode,
+        showBoth: currencyShowBoth,
+        codes: CURRENCY_CATALOG.map((option) => option.code),
+      })
+      applyCurrency(result.displayCurrency)
+      // The server overlays the provider's rates on the manual table, so a code
+      // it did not publish kept its rate; say so instead of letting the count
+      // read as if those rates had been dropped.
+      ratesMessage = describeRefreshRates(
+        result.ratesStored,
+        result.ratesMissing,
+        new URL(result.source).host
+      )
+      onRefresh?.()
+    } catch (err) {
+      ratesMessage = `Refresh failed, the rates below are unchanged: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    } finally {
+      isRefreshingRates = false
+    }
   }
 
   async function handleSaveAll() {
@@ -187,6 +338,7 @@
         retentionDays,
         maxRequestRecords,
         fallbackStrategy,
+        usageHistoryRetentionDays,
         stickyRoundRobinLimit,
         comboStrategy,
         forceFallback,
@@ -198,12 +350,17 @@
         oidcClientId,
         oidcScopes,
         oidcLoginLabel,
+        navVisibility: { hidden: hiddenNav },
         samlEntryPoint,
         samlIssuer,
         samlCert,
         samlLoginLabel,
+        displayCurrency: currencySetting(),
       })
       saveSuccess = true
+      showSaveHint = false
+      if (saveHintTimer) clearTimeout(saveHintTimer)
+      saveHintTimer = null
       onRefresh?.()
       setTimeout(() => (saveSuccess = false), 3000)
     } catch (err) {
@@ -372,6 +529,27 @@
     }
   }
 
+
+  async function handlePruneUsage() {
+    const daysLabel = usageHistoryRetentionDays > 0 ? `${usageHistoryRetentionDays} days` : '30 days'
+    const effectiveDays = usageHistoryRetentionDays > 0 ? usageHistoryRetentionDays : 30
+    try {
+      isPruningUsage = true
+      const preview = await api.pruneUsageHistory({ days: effectiveDays, dryRun: true })
+      const oldest = dbStats?.usageHistoryOldestTimestamp ? ` (oldest row: ${dbStats.usageHistoryOldestTimestamp.slice(0, 10)})` : ''
+      const prompt = `Prune usage history older than ${daysLabel}${oldest}?\n\nThis will permanently delete ${preview.wouldDelete?.toLocaleString() ?? 0} request records before ${preview.cutoff.slice(0, 10)}. Per-key token budgets will be carried over.\n\nType "PRUNE" to confirm:`
+      const answer = window.prompt(prompt)
+      if (answer !== 'PRUNE') return
+
+      const res = await api.pruneUsageHistory({ days: effectiveDays })
+      alert(`Pruned ${res.pruned?.toLocaleString() ?? 0} ledger record(s). ${res.carriedTokens?.toLocaleString() ?? 0} tokens carried into per-key budgets.`)
+      await loadDbStats()
+    } catch (err) {
+      alert(`Failed to prune usage history: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      isPruningUsage = false
+    }
+  }
   async function handleVacuum() {
     if (!confirm('Compact SQLite database (VACUUM)? This will return unallocated pages back to disk.')) return
     try {
@@ -432,8 +610,15 @@
     </button>
   </div>
 
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-    <!-- SECTION: Display preferences (localStorage-backed, not saved server-side) -->
+  <div
+    class="grid grid-cols-1 lg:grid-cols-2 gap-5"
+    oninput={handleSettingsInput}
+    onchange={handleSettingsInput}
+    onclick={handleSettingsInput}
+  >
+    <!-- SECTION: Display. Unit abbreviation and the usage-detail default are
+         localStorage preferences; the sidebar switch below them is a saved
+         setting (navVisibility), so a change there raises the save reminder. -->
     <Card padding="md" class="space-y-4">
       <div class="flex items-center justify-between pb-2 border-b border-border">
         <div class="flex items-center gap-2">
@@ -447,16 +632,98 @@
           <p class="font-semibold text-text-main">Unit abbreviation</p>
           <p class="text-[11px] text-text-subtle">Large numbers as 亿/万 (zh) or M/B (en); off → full numbers</p>
         </div>
-        <Toggle
-          checked={compactUnits}
-          size="sm"
-          label="Unit abbreviation"
-          onChange={(val: boolean) => {
-            setCompactUnits(val)
-            compactUnits = isCompactUnitsEnabled()
-          }}
-        />
+        <div data-save-hint="off">
+          <Toggle
+            checked={compactUnits}
+            size="sm"
+            label="Unit abbreviation"
+            onChange={(val: boolean) => {
+              setCompactUnits(val)
+              compactUnits = isCompactUnitsEnabled()
+            }}
+          />
+        </div>
       </div>
+
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="font-semibold text-text-main">Expand usage details</p>
+          <p class="text-[11px] text-text-subtle">
+            Activity Heatmap and Node Health open instead of starting collapsed
+          </p>
+        </div>
+        <div data-save-hint="off">
+          <Toggle
+            checked={detailsExpanded}
+            size="sm"
+            label="Expand usage details"
+            onChange={(val: boolean) => {
+              setDetailsExpandedByDefault(val)
+              detailsExpanded = isDetailsExpandedByDefault()
+            }}
+          />
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="font-semibold text-text-main">Combo flow</p>
+          <p class="text-[11px] text-text-subtle">
+            Off: removes the Combo flow panel from Overview and stops background combo queries
+          </p>
+        </div>
+        <div data-save-hint="off">
+          <Toggle
+            checked={comboFlow}
+            size="sm"
+            label="Combo flow"
+            onChange={(val: boolean) => {
+              setComboFlowVisible(val)
+              comboFlow = isComboFlowVisible()
+            }}
+          />
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="font-semibold text-text-main">Usage trend</p>
+          <p class="text-[11px] text-text-subtle">
+            Off: removes the Usage trend chart from Overview and skips chart queries
+          </p>
+        </div>
+        <div data-save-hint="off">
+          <Toggle
+            checked={usageTrend}
+            size="sm"
+            label="Usage trend"
+            onChange={(val: boolean) => {
+              setUsageTrendVisible(val)
+              usageTrend = isUsageTrendVisible()
+            }}
+          />
+        </div>
+      </div>
+
+      {#each TOGGLEABLE_NAV_ENTRIES as entry (entry.id)}
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <p class="font-semibold text-text-main">Advanced usage</p>
+            <p class="text-[11px] text-text-subtle">
+              Off: {entry.label} leaves the sidebar, its URL stops resolving, and the API-key
+              editor hides the Plan field
+            </p>
+          </div>
+          <Toggle
+            checked={!hiddenNav.includes(entry.id)}
+            size="sm"
+            label="Advanced usage"
+            onChange={(val) => {
+              hiddenNav = setNavVisible(hiddenNav, entry.id, val)
+            }}
+          />
+        </div>
+      {/each}
     </Card>
     <!-- SECTION 1: Runtime Storage -->
     <Card padding="md" class="space-y-4">
@@ -502,6 +769,7 @@
 
           <input
             type="file"
+            data-save-hint="off"
             accept=".zip,.json,application/zip,application/json"
             bind:this={fileInput}
             onchange={handleFileSelected}
@@ -570,7 +838,7 @@
           </button>
 
           {#if showPasswordFields}
-            <form onsubmit={handleUpdatePassword} class="space-y-2.5 pt-3">
+            <form onsubmit={handleUpdatePassword} class="space-y-2.5 pt-3" data-save-hint="off">
               {#if passwordErrorMessage}
                 <div class="p-2.5 rounded-lg bg-danger/10 border border-danger/20 text-red-600 dark:text-red-400 text-[11px]">
                   {passwordErrorMessage}
@@ -809,7 +1077,7 @@
         </p>
 
         <!-- Observability Mode & Retention Controls -->
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div class="space-y-1">
             <label class="text-[11px] font-medium text-text-muted">Observability Mode</label>
             <select
@@ -823,7 +1091,7 @@
           </div>
 
           <div class="space-y-1">
-            <label class="text-[11px] font-medium text-text-muted">Retention Window</label>
+            <label class="text-[11px] font-medium text-text-muted">Diagnostics Retention</label>
             <select
               bind:value={retentionDays}
               class="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-main focus:border-brand-500 focus:outline-none"
@@ -847,6 +1115,20 @@
               class="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-main focus:border-brand-500 focus:outline-none"
             />
           </div>
+
+          <div class="space-y-1">
+            <label class="text-[11px] font-medium text-text-muted">Usage Ledger Retention</label>
+            <select
+              bind:value={usageHistoryRetentionDays}
+              class="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-text-main focus:border-brand-500 focus:outline-none"
+            >
+              <option value={0}>Off (Keep Forever, Recommended)</option>
+              <option value={30}>30 Days</option>
+              <option value={90}>90 Days</option>
+              <option value={180}>180 Days</option>
+              <option value={365}>365 Days (1 Year)</option>
+            </select>
+          </div>
         </div>
 
         <!-- Database Storage Stats & Actions -->
@@ -860,6 +1142,13 @@
               <div>
                 <span class="text-text-muted">Request Details: </span>
                 <span class="font-mono font-semibold text-text-main">{dbStats.requestDetailsCount.toLocaleString()} rows</span>
+              </div>
+              <div>
+                <span class="text-text-muted">Usage Ledger: </span>
+                <span class="font-mono font-semibold text-text-main">{dbStats.usageHistoryCount.toLocaleString()} rows</span>
+                {#if dbStats.usageHistoryOldestTimestamp}
+                  <span class="text-[10px] text-text-subtle font-mono ml-1">(since {dbStats.usageHistoryOldestTimestamp.slice(0, 10)})</span>
+                {/if}
               </div>
               {#if dbStats.reclaimableBytes > 0}
                 <div>
@@ -877,6 +1166,14 @@
                 class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs text-text-main font-medium transition cursor-pointer disabled:opacity-50"
               >
                 <span>{isPruning ? 'Pruning...' : 'Prune Expired Records'}</span>
+              </button>
+              <button
+                type="button"
+                onclick={handlePruneUsage}
+                disabled={isPruningUsage || !dbStats || dbStats.usageHistoryCount === 0}
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs text-text-main font-medium transition cursor-pointer disabled:opacity-50"
+              >
+                <span>{isPruningUsage ? 'Pruning Ledger...' : 'Prune Usage History'}</span>
               </button>
               <button
                 type="button"
@@ -951,13 +1248,101 @@
       </div>
     </Card>
 
+    <!-- Save reminder: an operator who flipped a switch must not walk away
+         without saving. It appears on a change and hides itself again after a
+         few seconds (markUnsaved). -->
+    {#if showSaveHint}
+      <div
+        role="status"
+        class="fixed bottom-5 right-5 z-40 flex items-center gap-3 rounded-[10px] border border-border bg-surface-2 px-4 py-3 shadow-[var(--shadow-elev)]"
+      >
+        <span class="text-xs text-text-muted">Unsaved changes</span>
+        <Button variant="primary" onclick={handleSaveAll} loading={isSavingSettings}>
+          <Save class="w-3.5 h-3.5" />
+          <span>Save</span>
+        </Button>
+      </div>
+    {/if}
+    <!-- SECTION 7: Currency -->
+    <Card padding="md" class="space-y-4">
+      <div class="flex items-center gap-2 pb-2 border-b border-border">
+        <Coins class="w-4 h-4 text-brand-500" />
+        <h2 class="text-sm font-bold text-text-main">Currency</h2>
+      </div>
+
+      <p class="text-xs text-text-muted leading-relaxed">
+        Every cost is measured in USD and shown here in the currency you pick. The rates are yours
+        to keep: edit them, or refresh them from a public provider.
+      </p>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="space-y-1">
+          <label for="currency-code" class="text-[11px] font-medium text-text-muted">Display currency</label>
+          <select
+            id="currency-code"
+            bind:value={currencyCode}
+            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-xs text-text-main focus:outline-none focus:border-brand-500"
+          >
+            {#each CURRENCY_CATALOG as option (option.code)}
+              <option value={option.code}>{option.code} — {option.label}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="flex items-center justify-between gap-3 rounded-[10px] border border-border-subtle px-3 py-2">
+          <span class="text-xs text-text-muted">Show USD next to the converted amount</span>
+          <Toggle
+            checked={currencyShowBoth}
+            size="sm"
+            label="Show USD next to the converted amount"
+            onChange={(val) => (currencyShowBoth = val)}
+          />
+        </div>
+      </div>
+
+      <div class="space-y-1">
+        <p class="text-[11px] font-medium text-text-muted">Rates — one USD in each currency</p>
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+          {#each CURRENCY_CATALOG as option (option.code)}
+            <label class="flex items-center gap-2 rounded-[10px] border border-border-subtle px-2 py-1.5">
+              <span class="w-9 text-[11px] font-semibold text-text-muted">{option.code}</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                inputmode="decimal"
+                value={currencyRates[option.code] ?? ''}
+                placeholder={String(DEFAULT_RATES[option.code] ?? '')}
+                oninput={(e) => setRate(option.code, (e.target as HTMLInputElement).value)}
+                class="w-full bg-transparent text-xs text-text-main focus:outline-none"
+              />
+            </label>
+          {/each}
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-[11px] text-text-subtle">
+          1 USD = {formatCost(1, { code: currencyCode, rates: currencyRates, showBoth: false })} ·
+          {describeRates(currencySetting())}
+        </p>
+        <Button variant="ghost" onclick={refreshRates} loading={isRefreshingRates}>
+          <RefreshCw class="w-3.5 h-3.5" />
+          <span>Refresh from provider</span>
+        </Button>
+      </div>
+
+      {#if ratesMessage}
+        <p class="text-[11px] text-text-muted leading-relaxed">{ratesMessage}</p>
+      {/if}
+    </Card>
+
     <Modal
       isOpen={dbAuthOpen}
       onClose={closeDbAuth}
       title={pendingImportFile ? 'Confirm Import' : 'Confirm Download'}
       size="sm"
     >
-      <div class="space-y-3">
+      <div class="space-y-3" data-save-hint="off">
         <p class="text-text-muted">
           {pendingImportFile
             ? `Import "${pendingImportFile.name}"? This will overwrite existing server data.`

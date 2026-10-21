@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/constants"
 	"9router/proxy/internal/providers"
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/translator"
@@ -628,7 +629,9 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		resp, err := proxy.ForwardOpenAI(ctx, req.Client, &cfg, apiKey, transformedBody, req.IsStream)
+		resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
+			return forwardOpencodeRequest(ctx, req.Client, &cfg, apiKey, transformedBody, req.IsStream)
+		})
 		if err != nil {
 			return fmt.Errorf("ForwardOpencode (muse-spark responses): %w", err)
 		}
@@ -677,7 +680,9 @@ func ForwardOpencode(w http.ResponseWriter, req *Request) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	resp, err := proxy.ForwardOpenAI(ctx, req.Client, &cfg, apiKey, body, true)
+	resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
+		return forwardOpencodeRequest(ctx, req.Client, &cfg, apiKey, body, true)
+	})
 	if err != nil {
 		return fmt.Errorf("ForwardOpencode: %w", err)
 	}
@@ -762,14 +767,15 @@ func isOpencodeFreeModel(cleanModel string) bool {
 }
 
 var opencodeGoMessagesModels = map[string]bool{
-	"minimax-m3":    true,
-	"minimax-m2.7":  true,
-	"minimax-m2.5":  true,
-	"qwen3.8-max":   true,
-	"qwen3.8-flash": true,
-	"qwen3.7-max":   true,
-	"qwen3.7-plus":  true,
-	"qwen3.6-plus":  true,
+	"claude-haiku-5-5": true,
+	"minimax-m3":       true,
+	"minimax-m2.7":     true,
+	"minimax-m2.5":     true,
+	"qwen3.8-max":      true,
+	"qwen3.8-flash":    true,
+	"qwen3.7-max":      true,
+	"qwen3.7-plus":     true,
+	"qwen3.6-plus":     true,
 }
 
 // EnsureClaudeMessages exposes the OpenAI→Claude Messages request conversion
@@ -866,7 +872,7 @@ func ensureMessagesFor(body []byte, provider, model string) []byte {
 	// 4. messages & system
 	if msgs, ok := reqMap["messages"].([]any); ok && len(msgs) > 0 {
 		extractedSys, claudeMsgs := convertOpenAIMessagesToClaude(msgs)
-		reqMap["messages"] = claudeMsgs
+		reqMap["messages"] = cleanupConvertedClaudeMessages(body, claudeMsgs)
 		if extractedSys != "" {
 			if existingSys, ok := reqMap["system"].(string); ok && existingSys != "" {
 				reqMap["system"] = existingSys + "\n\n" + extractedSys
@@ -1048,6 +1054,34 @@ func sanitizeToolUseID(id string, mapping map[string]string) string {
 	newID := "toolu_" + hex.EncodeToString(sum[:])[:24]
 	mapping[id] = newID
 	return newID
+}
+
+// cleanupConvertedClaudeMessages applies the Messages-API content rule to a
+// conversation this package built itself.
+//
+// The OpenAI to Claude conversion passes the client content arrays through
+// unchanged, so a turn the client left empty — or a turn that only held parts
+// this conversion drops — reaches a Claude-shaped lane as an empty content
+// array, and the provider 400s the whole request. The Claude-client path never
+// had that hole: SanitizeClaudePassthrough drops those turns. This calls the
+// same rule from the same place (translator.DropNonContentfulClaudeMessages)
+// instead of restating it, so the two paths cannot drift apart.
+//
+// intentionalPrefill is read from the body the client sent: an OpenAI caller
+// that ends on an assistant turn asked for a prefill, and the trailing-turn
+// repair must not overwrite it (translator.ClaudeIntentionalPrefill).
+//
+// A conversation the filter empties completely keeps its turns. Dropping the
+// last one would trade an invalid empty-content turn for an equally invalid
+// empty messages array, and neither shape can be answered — this way the
+// caller that emptied the turn still gets the reason the provider gives.
+func cleanupConvertedClaudeMessages(clientBody []byte, claudeMsgs []any) []any {
+	cleaned, dropped := translator.DropNonContentfulClaudeMessages(
+		claudeMsgs, translator.ClaudeIntentionalPrefill(clientBody))
+	if !dropped || len(cleaned) == 0 {
+		return claudeMsgs
+	}
+	return cleaned
 }
 
 func convertOpenAIMessagesToClaude(messages []any) (systemText string, claudeMessages []any) {
@@ -1470,7 +1504,9 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	resp, err := proxy.ForwardOpenAI(ctx, req.Client, &cfg, "public", body, true)
+	resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
+		return proxy.ForwardOpenAI(ctx, req.Client, &cfg, "public", body, true)
+	})
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeGo (free lane): %w", err)
 	}
@@ -1492,6 +1528,61 @@ func forwardOpencodeGoFree(w http.ResponseWriter, req *Request, cleanModel strin
 		data = converted
 	}
 	return jsonResponse(req.Ctx, w, bytes.NewReader(data), req.TranslateResp, req.ResponseBuf)
+}
+
+func isOpencodeGoGeminiModel(cleanModel string) bool {
+	if mf, ok := providers.GetModelFormats("opencode-go", cleanModel); ok {
+		return mf.TargetFormat == providers.FormatGemini
+	}
+	return strings.HasPrefix(strings.ToLower(cleanModel), "gemini-")
+}
+
+func forwardOpencodeGoGemini(w http.ResponseWriter, req *Request, cleanModel, sessionHeader string) error {
+	action := "generateContent"
+	if req.IsStream {
+		action = "streamGenerateContent?alt=sse"
+	}
+
+	geminiURL := fmt.Sprintf("https://opencode.ai/inference/go/v1/models/%s:%s", cleanModel, action)
+	if req.Config != nil && req.Config.BaseURL != "" && !strings.Contains(req.Config.BaseURL, "opencode.ai") {
+		base := strings.TrimSuffix(strings.TrimRight(req.Config.BaseURL, "/"), "/chat/completions")
+		geminiURL = fmt.Sprintf("%s/%s:%s", base, cleanModel, action)
+	}
+
+	geminiBody, err := translator.TranslateOpenAIToGemini(req.Body)
+	if err != nil {
+		return fmt.Errorf("translate to Gemini for opencode-go: %w", err)
+	}
+
+	headers := map[string]string{
+		"Content-Type":       "application/json",
+		"x-goog-api-key":     req.APIKey,
+		"x-opencode-session": sessionHeader,
+	}
+	if req.IsStream {
+		headers["Accept"] = "text/event-stream"
+	}
+
+	ctx := req.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	resp, err := proxy.DoRequest(ctx, req.Client, "POST", geminiURL, headers, geminiBody)
+	if err != nil {
+		return fmt.Errorf("ForwardOpencodeGo (gemini route): %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, constants.UpstreamErrLimit))
+		return &proxy.UpstreamError{StatusCode: resp.StatusCode, Body: errBody, Header: resp.Header}
+	}
+
+	if req.IsStream {
+		return geminiStream(w, resp.Body, ctx)
+	}
+	return geminiNonStream(w, resp.Body)
 }
 
 func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
@@ -1517,6 +1608,10 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	// the keyless inference gate with public credentials (see zen).
 	if isOpencodeFreeModel(cleanModel) {
 		return forwardOpencodeGoFree(w, req, cleanModel)
+	}
+
+	if isOpencodeGoGeminiModel(cleanModel) {
+		return forwardOpencodeGoGemini(w, req, cleanModel, sessionHeader)
 	}
 
 	if isOpencodeGoResponsesModel(cleanModel) {
@@ -1567,7 +1662,9 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		resp, err := proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, transformedBody, req.IsStream)
+		resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
+			return proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, transformedBody, req.IsStream)
+		})
 		if err != nil {
 			return fmt.Errorf("ForwardOpencodeGo (muse-spark responses): %w", err)
 		}
@@ -1665,7 +1762,9 @@ func ForwardOpencodeGo(w http.ResponseWriter, req *Request) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	resp, err := proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, body, req.IsStream)
+	resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
+		return proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, body, req.IsStream)
+	})
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeGo (default route): %w", err)
 	}
