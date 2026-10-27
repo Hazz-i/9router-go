@@ -100,6 +100,21 @@ describe('router', () => {
     expect(pathToTab('/dashboard/media-providers/webSearch/antigravity')).toBe('media-web')
     expect(pathToTab('/dashboard/media-providers/webFetch/ollama')).toBe('media-web')
   })
+
+  // A detail page is a two-segment path with no exact route, so the kind
+  // substring decides the tab. Before these two checks existed, both kinds
+  // fell through to the generic 'media' fallback and every detail page opened
+  // on Web Fetch & Search.
+  it('keeps the live caption and realtime detail pages on their own tab', () => {
+    expect(pathToTab('/dashboard/media-providers/liveCaption/elevenlabs')).toBe('media-live-caption')
+    expect(pathToTab('/dashboard/media-providers/realtime/deepgram')).toBe('media-realtime')
+    expect(pathToTab(mediaProviderPath('liveCaption', 'elevenlabs'))).toBe('media-live-caption')
+    expect(pathToTab(mediaProviderPath('realtime', 'deepgram'))).toBe('media-realtime')
+    // The kinds that already worked keep resolving to their own tabs, not the
+    // fallback that happens to be a media tab too.
+    expect(pathToTab('/dashboard/media-providers/stt/elevenlabs')).toBe('media-stt')
+    expect(pathToTab('/dashboard/media-providers/tts/elevenlabs')).toBe('media-tts')
+  })
 })
 
 describe('usage sections', () => {

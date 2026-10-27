@@ -233,6 +233,12 @@ export function pathToTab(pathname: string): ActiveTab {
   if (normalized.includes('stt')) return 'media-stt'
   if (normalized.includes('video')) return 'media-video'
   if (normalized.includes('systemone')) return 'media-systemone'
+  // A provider detail path ("<kind>/<providerId>") has no exact route, so the
+  // kind substring is what recovers its tab. liveCaption and realtime need
+  // their own checks before the generic 'media' fallback, or opening (or
+  // reloading) a detail page lands on Web Fetch & Search instead.
+  if (normalized.includes('livecaption')) return 'media-live-caption'
+  if (normalized.includes('realtime')) return 'media-realtime'
   if (normalized.includes('media')) return 'media-web'
   if (normalized.includes('token-saver')) return 'token-saver'
   if (normalized.includes('cli-tools')) return 'cli-tools'
