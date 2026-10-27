@@ -14,35 +14,59 @@ export function setDetailsExpandedByDefault(on: boolean): void {
   localStorage.setItem(DETAILS_EXPANDED_KEY, on ? '1' : '0')
 }
 
-// The Overview's two optional panels (Combo flow, Usage trend) are visible by
-// default; the Settings > Display switches below hide the whole panel from the
-// section. Visibility, not the collapsed state: a hidden panel is not rendered
-// and the preference survives the visit.
-const COMBO_FLOW_KEY = 'showComboFlow'
-const USAGE_TREND_KEY = 'showUsageTrend'
+// The heavy Settings blocks — the currency rate grid, the per-panel Usage list
+// with its arrangement controls, and the sidebar feature-visibility row — stay
+// folded behind the Display switch until an operator asks for them. Nothing is
+// turned off by folding them: the currency still formats every cost and the
+// arrangement still drives the Usage page, so this is a disclosure preference
+// rather than a feature flag, and it sits with the other display defaults.
+const ADVANCED_SETTINGS_KEY = 'advancedSettingsVisible'
 
-export function isComboFlowVisible(): boolean {
-  if (typeof localStorage === 'undefined') return true
-  return localStorage.getItem(COMBO_FLOW_KEY) !== '0'
+export function isAdvancedSettingsVisible(): boolean {
+  if (typeof localStorage === 'undefined') return false
+  return localStorage.getItem(ADVANCED_SETTINGS_KEY) === '1'
 }
 
-export function setComboFlowVisible(on: boolean): void {
+export function setAdvancedSettingsVisible(on: boolean): void {
   if (typeof localStorage === 'undefined') return
-  localStorage.setItem(COMBO_FLOW_KEY, on ? '1' : '0')
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('display-prefs-changed'))
-  }
+  localStorage.setItem(ADVANCED_SETTINGS_KEY, on ? '1' : '0')
 }
 
-export function isUsageTrendVisible(): boolean {
-  if (typeof localStorage === 'undefined') return true
-  return localStorage.getItem(USAGE_TREND_KEY) !== '0'
+// Animation level (Settings > Display). One attribute on <html> decides what
+// every surface in the dashboard animates: `full` and `default` are the same
+// (current behaviour, so an untouched install is unchanged), `minimal` drops
+// the backdrop blur and every transition, and `off` also stops the looping
+// animations — spinners, pings and pulses — leaving a static icon in place of
+// a rotating one. The CSS that reads the attribute lives in src/index.css; no
+// component carries a per-level class.
+export type AnimationLevel = 'full' | 'default' | 'minimal' | 'off'
+
+const ANIMATION_LEVEL_KEY = 'displayAnimationLevel'
+
+export const ANIMATION_LEVELS: { id: AnimationLevel; label: string; hint: string }[] = [
+  { id: 'full', label: 'Full', hint: 'Every animation and backdrop blur, as designed.' },
+  { id: 'default', label: 'Default', hint: 'Same as Full — kept so an untouched install reads as the default.' },
+  { id: 'minimal', label: 'Minimal', hint: 'No backdrop blur and no transitions; loading spinners still rotate.' },
+  { id: 'off', label: 'Off', hint: 'Nothing moves: no blur, no transitions, no spinning icons.' },
+]
+
+export function normalizeAnimationLevel(value: unknown): AnimationLevel {
+  return value === 'full' || value === 'minimal' || value === 'off' ? value : 'default'
 }
 
-export function setUsageTrendVisible(on: boolean): void {
+export function getAnimationLevel(): AnimationLevel {
+  if (typeof localStorage === 'undefined') return 'default'
+  return normalizeAnimationLevel(localStorage.getItem(ANIMATION_LEVEL_KEY))
+}
+
+export function setAnimationLevel(level: AnimationLevel): void {
   if (typeof localStorage === 'undefined') return
-  localStorage.setItem(USAGE_TREND_KEY, on ? '1' : '0')
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('display-prefs-changed'))
-  }
+  localStorage.setItem(ANIMATION_LEVEL_KEY, level)
+  applyAnimationLevel(level)
+}
+
+/** Writes the attribute the CSS in index.css keys off. Safe to call at boot. */
+export function applyAnimationLevel(level: AnimationLevel = getAnimationLevel()): void {
+  if (typeof document === 'undefined') return
+  document.documentElement.dataset.animLevel = level
 }

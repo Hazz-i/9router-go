@@ -34,13 +34,15 @@
   import Toasts from './lib/ui/Toasts.svelte'
   import TerminalView from './components/TerminalView.svelte'
   import TokenSaverView from './components/TokenSaverView.svelte'
+  import JailbreakView from './components/JailbreakView.svelte'
   import TopBar from './components/TopBar.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
   import { PROVIDER_CATALOG } from './lib/providers'
   import { getIconPath } from './components/connections/types'
-  import { isNavHidden, normalizeHiddenNav } from './lib/nav'
+  import { isNavHidden, normalizeHiddenNav, normalizeNavOrder } from './lib/nav'
   import { setHiddenNavEntries } from './lib/navVisibility.svelte'
   import { setDisplayCurrency } from './lib/currency.svelte'
+  import { applyAnimationLevel } from './lib/displayPrefs'
 
   let activeTab = $state<ActiveTab>(
     typeof window !== 'undefined' ? pathToTab(window.location.pathname) : 'endpoint'
@@ -54,9 +56,11 @@
   // "this deployment stores no hide list" from "the list has not arrived yet".
   let settingsLoaded = $state(false)
 
-  // Feature Visibility: the entries the operator hid in Settings. The sidebar
-  // and this guard read the same list (web/src/lib/nav.ts).
+  // Feature Visibility: the entries the operator hid, and the arrangement they
+  // moved them into. The sidebar and this guard read the same settings
+  // (web/src/lib/nav.ts).
   let hiddenNav = $derived(normalizeHiddenNav(settings.navVisibility))
+  let navOrder = $derived(normalizeNavOrder(settings.navVisibility))
 
   // Mirror the list for the components that read it outside the settings flow
   // (the API-key editor drops its Plan field with the entry).
@@ -183,6 +187,7 @@
   }
 
   onMount(() => {
+    applyAnimationLevel()
     const unsubscribeUnauthorized = onUnauthorized(() => {
       isAuthenticatedState = false
       requireLogin = true
@@ -286,6 +291,12 @@
     'console-log': { title: 'Console Log', description: 'Live server console output' },
     terminal: { title: 'Console Log', description: 'Live server console output' },
     settings: { title: 'Settings', description: 'Manage your preferences and configuration' },
+    security: {
+      title: 'Security',
+      description: 'Encrypt provider credentials at rest, and scan prompts for personal data and injection attempts before they leave the gateway',
+    },
+    plans: { title: 'Plans', description: 'Per-key quota plans and policy resolution' },
+    jailbreak: { title: 'Persona', description: 'Per-model system-prompt injection and Gemini safety bypass' },
   }
 
   function handleOpenNewCombo() {
@@ -349,6 +360,9 @@
         bind:updateInfo={systemUpdateInfo}
         bind:version={systemVersion}
         hiddenNav={hiddenNav}
+        navOrder={navOrder}
+        brandName={settings.appName || ''}
+        brandLogo={settings.appLogoUrl || ''}
       />
     </div>
 
@@ -642,6 +656,8 @@
               <SecurityPanel />
             {:else if activeTab === 'plans'}
               <PlansView />
+            {:else if activeTab === 'jailbreak'}
+              <JailbreakView />
             {/if}
           {/if}
         </div>

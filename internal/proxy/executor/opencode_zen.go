@@ -271,6 +271,9 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 	var zenToolNameMap map[string]string
 	if free {
 		body, zenToolNameMap = translator.ConcealOpenCodeV2FingerprintTools(body, false, isOpenCodeAutoToolChoiceModel(cleanModel))
+		if req.IsStream {
+			w = NewOpenCodeExecuteBridgeWriter(w)
+		}
 	} else {
 		body, zenToolNameMap = translator.ConcealFingerprintTools(body)
 	}
@@ -290,18 +293,23 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 	} else {
 		cfg.BaseURL = zenBaseURL(&cfg, cleanModel) + "/chat/completions"
 	}
-	cfg.StaticHeaders = zenHeaders(&cfg, req.SessionID, true, free)
+	zenHint := opencodeSessionHint(req, free)
+	cfg.StaticHeaders = zenHeaders(&cfg, zenHint, true, free)
 
 	// The retry wraps the transport choice: a repeat must re-dial through
 	// whichever stack the first attempt used, because the free tier only
 	// answers the stealth client and a plain-HTTP repeat would fail for a
 	// different reason than the refusal it is retrying.
-	resp, err := forwardOpenCode(reqCtx(req), func() (*http.Response, error) {
+	resp, err := forwardOpenCodeRotating(reqCtx(req), func() (*http.Response, error) {
 		if free {
 			return forwardOpencodeRequest(reqCtx(req), req.Client, &cfg, req.APIKey, body, true)
 		}
 		return proxy.ForwardOpenAI(reqCtx(req), req.Client, &cfg, req.APIKey, body, true)
-	})
+	}, func() (*http.Response, error) {
+		return forwardOpencodeRequestDirect(reqCtx(req), &cfg, req.APIKey, body, true)
+	}, rotateOpencodeStableSession(opencodeStableSessionKey(req, free), zenHint, func(session string) {
+		cfg.StaticHeaders = zenHeaders(&cfg, session, true, free)
+	}))
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeZen: %w", err)
 	}
@@ -320,6 +328,9 @@ func forwardZenChat(w http.ResponseWriter, req *Request, cleanModel, sourceForma
 	// The gate forces streaming, so a sync caller gets the SSE body re-aggregated.
 	if converted, ok := sseToOpenAIJSON(data); ok {
 		data = converted
+	}
+	if free {
+		data = bridgeOpenCodeExecuteToolCallsJSON(data)
 	}
 	return jsonResponse(req.Ctx, w, bytes.NewReader(data), req.TranslateResp, req.ResponseBuf)
 }
@@ -367,15 +378,27 @@ func forwardZenResponses(w http.ResponseWriter, req *Request, cleanModel, source
 		cfg.BaseURL = zenBaseURL(&cfg, cleanModel) + zenResponsesPath
 	}
 	// zenHeaders reads from the copy so the relay headers just set survive.
-	cfg.StaticHeaders = zenHeaders(&cfg, req.SessionID, req.IsStream, free)
+	zenHint := opencodeSessionHint(req, free)
+	cfg.StaticHeaders = zenHeaders(&cfg, zenHint, req.IsStream, free)
 
 	ctx := reqCtx(req)
-	resp, err := forwardOpenCode(ctx, func() (*http.Response, error) {
+	if free && req.IsStream && !translator.IsResponsesClient(ctx) {
+		// A chat-completions client on the responses lane receives converted
+		// chat chunks, so the execute/CALL_TOOL bridge applies. A native
+		// Responses client gets the event stream passed through, where the
+		// bridge's line protocol does not apply.
+		w = NewOpenCodeExecuteBridgeWriter(w)
+	}
+	resp, err := forwardOpenCodeRotating(ctx, func() (*http.Response, error) {
 		if free {
 			return forwardOpencodeRequest(ctx, req.Client, &cfg, req.APIKey, body, req.IsStream)
 		}
 		return proxy.ForwardOpenAI(ctx, req.Client, &cfg, req.APIKey, body, req.IsStream)
-	})
+	}, func() (*http.Response, error) {
+		return forwardOpencodeRequestDirect(ctx, &cfg, req.APIKey, body, req.IsStream)
+	}, rotateOpencodeStableSession(opencodeStableSessionKey(req, free), zenHint, func(session string) {
+		cfg.StaticHeaders = zenHeaders(&cfg, session, req.IsStream, free)
+	}))
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeZen (responses): %w", err)
 	}
@@ -421,14 +444,21 @@ func forwardZenMessages(w http.ResponseWriter, req *Request, cleanModel string, 
 		headers["Authorization"] = "Bearer public"
 	}
 	headers["anthropic-version"] = "2023-06-01"
-	for k, v := range zenHeaders(req.Config, req.SessionID, req.IsStream, free) {
-		switch strings.ToLower(k) {
-		case "authorization", "x-api-key", "content-type", "accept":
-			continue
-		default:
-			headers[k] = v
+	// The session merge is a closure so a spent-session rotation (429
+	// FreeUsageLimitError, free lane) can re-install a freshly minted session
+	// on the same header map the forward dials with.
+	msgHint := opencodeSessionHint(req, free)
+	mergeZenSession := func(session string) {
+		for k, v := range zenHeaders(req.Config, session, req.IsStream, free) {
+			switch strings.ToLower(k) {
+			case "authorization", "x-api-key", "content-type", "accept":
+				continue
+			default:
+				headers[k] = v
+			}
 		}
 	}
+	mergeZenSession(msgHint)
 
 	// An edge relay carries the destination in headers, so the lane belongs in
 	// x-relay-path rather than in the URL the gateway dials.
@@ -439,7 +469,26 @@ func forwardZenMessages(w http.ResponseWriter, req *Request, cleanModel string, 
 	}
 
 	ctx := reqCtx(req)
-	resp, err := proxy.DoRequest(ctx, req.Client, "POST", messagesURL, headers, body)
+	var (
+		resp *http.Response
+		err  error
+	)
+	if free {
+		// The free tier answers only the stealth stack on a direct dial: a
+		// plain Go request is refused with 403 FreeTierError while the same
+		// bytes through an edge relay pass, so the free lane must not take
+		// the plain path (forwardOpencodeGoFree had the same hole).
+		msgCfg := *req.Config
+		msgCfg.BaseURL = messagesURL
+		msgCfg.StaticHeaders = headers
+		resp, err = forwardOpenCodeRotating(ctx, func() (*http.Response, error) {
+			return forwardOpencodeRequest(ctx, req.Client, &msgCfg, "public", body, req.IsStream)
+		}, func() (*http.Response, error) {
+			return forwardOpencodeRequestDirect(ctx, &msgCfg, "public", body, req.IsStream)
+		}, rotateOpencodeStableSession(opencodeStableSessionKey(req, free), msgHint, mergeZenSession))
+	} else {
+		resp, err = proxy.DoRequest(ctx, req.Client, "POST", messagesURL, headers, body)
+	}
 	if err != nil {
 		return fmt.Errorf("ForwardOpencodeZen (messages): %w", err)
 	}

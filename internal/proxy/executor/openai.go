@@ -15,10 +15,42 @@ import (
 	"9router/proxy/internal/proxy"
 	"9router/proxy/internal/shutdown"
 	"9router/proxy/internal/translator"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 )
+
+// renameMaxTokensBody moves max_tokens onto max_completion_tokens and drops
+// the old key, keeping an explicit client-sent target value. A body without
+// max_tokens, or one that does not parse as an object, returns unchanged.
+func renameMaxTokensBody(body []byte) []byte {
+	var m map[string]jsontext.Value
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	raw, ok := m["max_tokens"]
+	if !ok {
+		return body
+	}
+	if _, exists := m["max_completion_tokens"]; !exists {
+		m["max_completion_tokens"] = raw
+	}
+	delete(m, "max_tokens")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
 
 // ForwardOpenAI sends an OpenAI-format request and writes the response.
 func ForwardOpenAI(w http.ResponseWriter, req *Request) error {
+	// Provider-scoped param rules from upstream paramSupport strip unsupported
+	// params on the outgoing body (executors/default.js:91). The openai rule
+	// renames max_tokens because current OpenAI models answer 400 "Use
+	// 'max_completion_tokens' instead".
+	if req.Provider == "openai" {
+		req.Body = renameMaxTokensBody(req.Body)
+	}
 	resp, err := proxy.ForwardOpenAI(req.Ctx, req.Client, req.Config, req.APIKey, req.Body, req.IsStream)
 	if err != nil {
 		return fmt.Errorf("ForwardOpenAI upstream: %w", err)
@@ -91,6 +123,7 @@ func execSSEStream(w http.ResponseWriter, upstream io.Reader, req *Request) erro
 	return sseStream(sseStreamOpts{
 		W: w, Upstream: upstream, Translate: req.TranslateResp, StartTime: startTime,
 		TTFT: req.TTFT, Buf: req.ResponseBuf, Ctx: req.Ctx, ToolNameMap: req.ToolNameMap,
+		LiftReasoningAliases: req.LiftReasoningAliases,
 	})
 }
 
@@ -113,6 +146,9 @@ type sseStreamOpts struct {
 	Buf         io.Writer
 	Ctx         context.Context
 	ToolNameMap map[string]string
+	// LiftReasoningAliases patches passthrough deltas to expose alias-shaped
+	// thinking as reasoning_content (opencode quirk).
+	LiftReasoningAliases bool
 }
 
 // sseStream pipes SSE chunks to client with optional format translation.
@@ -121,6 +157,7 @@ func sseStream(o sseStreamOpts) error {
 	translate, startTime := o.Translate, o.StartTime
 	ttft, buf := o.TTFT, o.Buf
 	ctx, toolNameMap := o.Ctx, o.ToolNameMap
+	liftAliases := o.LiftReasoningAliases
 
 	// A /v1/responses client on a Chat Completions upstream needs the answer
 	// replayed as Responses events. The branch sits ahead of the header write
@@ -149,6 +186,9 @@ func sseStream(o sseStreamOpts) error {
 				for _, ev := range events {
 					if len(ev.Payload) == 0 {
 						continue
+					}
+					if liftAliases {
+						ev.Payload = liftReasoningAliasesPayload(ev.Payload)
 					}
 					if bytes.Contains(ev.Payload, []byte(`"message_delta"`)) || bytes.Contains(ev.Payload, []byte(`"message_stop"`)) {
 						sawTerminal = true
@@ -203,6 +243,10 @@ func sseStream(o sseStreamOpts) error {
 			}
 			return err
 		}
+		var patchers []func([]byte) []byte
+		if liftAliases {
+			patchers = append(patchers, liftReasoningAliasesPayload)
+		}
 		return proxy.SSECopy(hw, upstream, flusher, func(chunk []byte) {
 			if ttft != nil && *ttft == 0 {
 				*ttft = time.Since(startTime).Milliseconds()
@@ -211,7 +255,7 @@ func sseStream(o sseStreamOpts) error {
 				buf.Write(chunk)
 			}
 			captureUsageFromSSEChunk(ctx, chunk)
-		})
+		}, patchers...)
 	}
 
 	sessionKey := translator.NewSessionKey("stream")
@@ -343,11 +387,13 @@ func jsonResponse(ctx context.Context, w http.ResponseWriter, upstream io.Reader
 		}
 		if err != nil || translated == nil {
 			log.Error("executor", "json translate error", "error", err)
-			// Fall back to original response
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			w.Write(body)
-			return nil
+			// A Claude client cannot read a Chat Completions body. Serving it
+			// under a 200 hands the client JSON that is not a Message — the
+			// "HTTP 200 … body is JSON but not a Message" report. Fail as an
+			// upstream error so the router can fall back, same as the retired
+			// chat path (handlers/chat/forward.go).
+			return proxy.UpstreamFailure(http.StatusBadGateway,
+				"upstream response could not be translated to Claude format")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

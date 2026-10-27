@@ -21,8 +21,11 @@ type ProviderConfig struct {
 	VideoURL      string            // override /videos/generations endpoint
 	VoicesURL     string            // override /audio/voices listing endpoint
 	SystemoneURL  string            // override /systemone endpoint (System One structured evaluation)
+	SystemonePath string            // registry path a saved host override is joined with (empty: override is a full URL)
 	FetchURL      string            // override /web/fetch endpoint (Jina, Firecrawl, etc.)
 	FetchMethod   string            // HTTP method for fetch: GET or POST (default POST)
+	SearchURL     string            // /v1/search endpoint. Empty means the provider has no search lane.
+	SearchMethod  string            // HTTP method for search: GET or POST (default POST)
 	UsageURL      string            // override /usage endpoint (quota tracker)
 
 	// UpstreamIsAnthropic marks an entry whose upstream speaks Anthropic Messages while
@@ -34,6 +37,17 @@ type ProviderConfig struct {
 	// LocalByDesign marks a provider whose upstream endpoint is intended to run on the
 	// local host or loopback network (e.g. ollama-local on localhost:11434).
 	LocalByDesign bool
+
+	// Hidden keeps a provider out of the lists a person scans — the provider
+	// pickers, the quota page — while leaving it fully reachable: connections
+	// still resolve it and requests still route to it. The MMF entries use it
+	// because they exist to serve traffic, not to be chosen.
+	Hidden bool
+
+	// RequireClaudeToolType marks providers whose Anthropic-compatible Messages
+	// endpoint strictly rejects tool declarations that omit the `type` field
+	// (e.g. MiniMax). When true, DefaultClaudeToolType will inject `type: "custom"`.
+	RequireClaudeToolType bool
 }
 
 // Bedrock protocol constants. Region is substituted per request by the executor, so the
@@ -143,6 +157,48 @@ var modelsListURL = map[string]string{
 	// SumoPod exposes the standard OpenAI /v1/models catalogue (auth required,
 	// same contract as tokenharbor/dahl).
 	"sumopod": "https://ai.sumopod.com/v1/models",
+	"nous":    "https://inference-api.nousresearch.com/v1/models",
+	// Command Code publishes its whole Provider API catalogue on the standard
+	// OpenAI /v1/models shape, keyless: every id it sells, the free tiers
+	// included (reflection/beam:free, stealth/glyph-cluster:free,
+	// poolside/laguna-s-2.1-free) and the paid ones added since the registry
+	// snapshot (minimax/minimax-m3.1-flash, z-ai/glm-5.3-flash, …). The
+	// registry catalog is a fixed 22-model list, so without this entry the
+	// dashboard cannot discover anything the snapshot predates.
+	"commandcode": "https://api.commandcode.ai/provider/v1/models",
+	// Five more providers whose catalogue is reachable without a valid
+	// credential, so the discovery path that fixed commandcode covers them
+	// unchanged: "Check Latest Models", "Import from /models" and "Sync Models"
+	// all read this one map.
+	//
+	// They split on whether the endpoint *validates* the bearer the handler
+	// always sends, and the difference is only in how a revoked key reports:
+	//
+	//   - nvidia, ollama and openrouter answer 200 to any Authorization header,
+	//     bogus token included, so discovery survives a revoked credential and
+	//     still lists what the provider serves.
+	//   - vercel-ai-gateway and chutes answer 200 with no header at all but 401
+	//     as soon as one is sent, so a revoked key reports a failed fetch
+	//     exactly like the keyed aggregators do.
+	//
+	// Either way a connection must exist first — writeConnectionModels refuses
+	// a provider with no stored key before it dials anything.
+	//
+	// vercel-ai-gateway and chutes ship no static catalog at all (absent from
+	// ProviderModels and from web/src/lib/models.ts), so before this entry the
+	// dashboard could not list a single model for either. nvidia and ollama
+	// carry 11 and 8 static rows against 84 and 23 live ones. openrouter
+	// already had a web modelsFetcher for its free tier, but no backend entry,
+	// so its "Check Latest Models" button never rendered.
+	"vercel-ai-gateway": "https://ai-gateway.vercel.sh/v1/models",
+	"chutes":            "https://llm.chutes.ai/v1/models",
+	"nvidia":            "https://integrate.api.nvidia.com/v1/models",
+	// Ollama's cloud library is not an OpenAI /v1/models endpoint: it answers
+	// {models:[{name, model, …}]}. writeConnectionModels accepts either `data`
+	// or `models`, and the dashboard falls back to the `model` field when `id`
+	// is absent, so the shape needs no special case here.
+	"ollama":     "https://ollama.com/api/tags",
+	"openrouter": "https://openrouter.ai/api/v1/models",
 }
 
 // modelsListHeaders carries the extra headers one live-catalogue endpoint
@@ -475,16 +531,23 @@ var KnownProviders = map[string]ProviderConfig{
 	// an OpenAI-shaped error body. That is the lane ForwardOpenAI already speaks,
 	// so the fix needs no native-translator port.
 	"ollama": {
-		BaseURL:     "https://ollama.com/v1/chat/completions",
-		AuthHeader:  "Authorization",
-		AuthScheme:  "bearer",
-		FetchURL:    "https://ollama.com/api/web_fetch",
-		FetchMethod: "POST",
+		BaseURL:      "https://ollama.com/v1/chat/completions",
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		FetchURL:     "https://ollama.com/api/web_fetch",
+		FetchMethod:  "POST",
+		SystemoneURL: "https://ollama.com/v1/systemone",
 	},
 	"siliconflow": {
 		BaseURL:    "https://api.siliconflow.com/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+	},
+	"sensenova": {
+		BaseURL:    "https://token.sensenova.cn/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		ImageURL:   "https://token.sensenova.cn/v1/images/generations",
 	},
 	"cloudflare-ai": {
 		BaseURL:    "https://api.cloudflare.com/client/v4/accounts/" + os.Getenv("CLOUDFLARE_ACCOUNT_ID") + "/ai/v1/chat/completions",
@@ -497,6 +560,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme:    "bearer",
 		DefaultAPIKey: "mimo-dynamic",
 		NoAuth:        true,
+		Hidden:        true,
 	},
 	"blackbox": {
 		BaseURL:    "https://api.blackbox.ai/v1/chat/completions",
@@ -580,7 +644,10 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"alicode-intl": {
-		BaseURL:    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+		// Coding Plan keys live on the coding-intl host; dashscope-intl is the
+		// Model Studio (alims-intl) host and rejects them
+		// (upstream registry/alicode-intl.js:17).
+		BaseURL:    "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -607,10 +674,10 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		StaticHeaders: map[string]string{
-			"User-Agent":          "IDE/2.108.1 CodeBuddy/2.108.1",
+			"User-Agent":          "CLI/2.108.1 CodeBuddy/2.108.1",
 			"X-Product":           "SaaS",
-			"X-IDE-Type":          "IDE",
-			"X-IDE-Name":          "IDE",
+			"X-IDE-Type":          "CLI",
+			"X-IDE-Name":          "CLI",
 			"x-requested-with":    "XMLHttpRequest",
 			"x-codebuddy-request": "1",
 		},
@@ -619,6 +686,7 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://gitlab.com/api/v4/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		Hidden:     true,
 	},
 	"glm-cn": {
 		BaseURL:    "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
@@ -642,9 +710,12 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://apis.iflow.cn/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		Hidden:     true,
 	},
 	"alitp-intl": {
-		BaseURL:    "https://token-plan.ap-southeast-1.aliyuncs.com/v1/chat/completions",
+		// Token Plan is served from the .maas host under the compatible-mode
+		// path, not the bare /v1 path (upstream registry/alitp-intl.js:23).
+		BaseURL:    "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
@@ -659,10 +730,16 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
-	"minimax": {
-		BaseURL:    "https://api.minimax.io/v1/chat/completions",
+	"nous": {
+		BaseURL:    "https://inference-api.nousresearch.com/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+	},
+	"minimax": {
+		BaseURL:               "https://api.minimax.io/v1/chat/completions",
+		AuthHeader:            "Authorization",
+		AuthScheme:            "bearer",
+		RequireClaudeToolType: true,
 	},
 	"kimi": {
 		BaseURL:    "https://api.kimi.com/coding/v1/chat/completions",
@@ -706,11 +783,15 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader:    "Authorization",
 		AuthScheme:    "bearer",
 		LocalByDesign: true,
+		SystemoneURL:  "http://localhost:11434/v1/systemone",
+		// Saved host (providerSpecificData.baseUrl) is joined with this path.
+		SystemonePath: "/v1/systemone",
 	},
 	"minimax-cn": {
-		BaseURL:    "https://api.minimaxi.com/v1/chat/completions",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:               "https://api.minimaxi.com/v1/chat/completions",
+		AuthHeader:            "Authorization",
+		AuthScheme:            "bearer",
+		RequireClaudeToolType: true,
 	},
 	// MiniMax Code (mcode) — the coding-subscription credits lane, served as a
 	// provider. Anthropic Messages on MiniMax's agent gateway, signed in with
@@ -724,10 +805,11 @@ var KnownProviders = map[string]ProviderConfig{
 	// (AGENTS.md §3.A). Port of upstream decolua/9router registry
 	// minimax-code.js / minimax-code-global.js.
 	"minimax-code": {
-		BaseURL:    "https://agent.minimax.cn/mavis/api/v1/llm/v1/messages",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
-		Format:     "claude",
+		BaseURL:               "https://agent.minimax.cn/mavis/api/v1/llm/v1/messages",
+		AuthHeader:            "Authorization",
+		AuthScheme:            "bearer",
+		Format:                "claude",
+		RequireClaudeToolType: true,
 		StaticHeaders: map[string]string{
 			"User-Agent":       "MiniMaxAgent",
 			"X-Mavis-Agent-Id": "main",
@@ -737,10 +819,11 @@ var KnownProviders = map[string]ProviderConfig{
 		},
 	},
 	"minimax-code-global": {
-		BaseURL:    "https://agent.minimax.io/mavis/api/v1/llm/v1/messages",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
-		Format:     "claude",
+		BaseURL:               "https://agent.minimax.io/mavis/api/v1/llm/v1/messages",
+		AuthHeader:            "Authorization",
+		AuthScheme:            "bearer",
+		Format:                "claude",
+		RequireClaudeToolType: true,
 		StaticHeaders: map[string]string{
 			"User-Agent":        "MiniMaxAgent",
 			"X-Mavis-Agent-Id":  "main",
@@ -865,10 +948,12 @@ var KnownProviders = map[string]ProviderConfig{
 		FetchMethod: "GET",
 	},
 	"firecrawl": {
-		BaseURL:    "https://api.firecrawl.com/v1",
+		// Firecrawl serves .dev, not .com; upstream hits
+		// https://api.firecrawl.dev/v1/scrape (registry/firecrawl.js:20).
+		BaseURL:    "https://api.firecrawl.dev/v1",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
-		FetchURL:   "https://api.firecrawl.com/v1/scrape",
+		FetchURL:   "https://api.firecrawl.dev/v1/scrape",
 	},
 	"freebuff": {
 		BaseURL:    "https://www.codebuff.com/api/v1/chat/completions",
@@ -885,26 +970,37 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"brave-search": {
-		BaseURL:    "https://api.search.brave.com/res/v1/web/search",
-		AuthHeader: "X-Subscription-Token",
-		AuthScheme: "raw",
+		BaseURL:      "https://api.search.brave.com/res/v1/web/search",
+		AuthHeader:   "X-Subscription-Token",
+		AuthScheme:   "raw",
+		SearchURL:    "https://api.search.brave.com/res/v1/web/search",
+		SearchMethod: "GET",
 	},
 	"cartesia": {
 		BaseURL:    "https://api.cartesia.ai/tts/bytes",
 		AuthHeader: "x-api-key",
 		AuthScheme: "raw",
 		TTSURL:     "https://api.cartesia.ai/tts/bytes",
+		Hidden:     true,
 	},
 	"exa": {
-		BaseURL:    "https://api.exa.ai/search",
-		AuthHeader: "x-api-key",
-		AuthScheme: "raw",
+		BaseURL:      "https://api.exa.ai/search",
+		AuthHeader:   "x-api-key",
+		AuthScheme:   "raw",
+		SearchURL:    "https://api.exa.ai/search",
+		SearchMethod: "POST",
+		FetchURL:     "https://api.exa.ai/contents",
+		FetchMethod:  "POST",
 	},
 	"huggingface": {
-		BaseURL:    "https://api-inference.huggingface.co/models",
+		// The legacy api-inference.huggingface.co host is gone; upstream
+		// open-sse/providers/registry/huggingface.js:64-99 routes everything
+		// through the Inference Providers router.
+		BaseURL:    "https://router.huggingface.co",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
-		ImageURL:   "https://api-inference.huggingface.co/models",
+		ImageURL:   "https://router.huggingface.co",
+		STTURL:     "https://router.huggingface.co/hf-inference/models",
 	},
 	"inworld": {
 		BaseURL:    "https://api.inworld.ai/tts/v1/voice",
@@ -918,30 +1014,40 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"linkup": {
-		BaseURL:    "https://api.linkup.so/v1/search",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:      "https://api.linkup.so/v1/search",
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		SearchURL:    "https://api.linkup.so/v1/search",
+		SearchMethod: "POST",
 	},
+	// Perplexity Web (Pro/Max): cookie site with no executor behind it yet —
+	// upstream parks it the same way (serviceKinds: [], "the code and saved
+	// connections remain intact"), so the cookie probe and any stored
+	// connection keep working while it stays out of the lists a person scans.
 	"perplexity-web": {
 		BaseURL:    "https://www.perplexity.ai/rest/sse/perplexity_ask",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		Hidden:     true,
 	},
 	"playht": {
 		BaseURL:    "https://api.play.ht/api/v2/tts/stream",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		TTSURL:     "https://api.play.ht/api/v2/tts/stream",
+		Hidden:     true,
 	},
 	// TinyFish — one x-api-key credential behind two separate hosts (search
 	// and fetch), which is why BaseURL is a non-endpoint root here: appending
 	// /v1/search to it would hit a host that does not serve search.
 	"tinyfish": {
-		BaseURL:     "https://api.tinyfish.ai",
-		AuthHeader:  "x-api-key",
-		AuthScheme:  "raw",
-		FetchURL:    "https://api.fetch.tinyfish.ai",
-		FetchMethod: "POST",
+		BaseURL:      "https://api.tinyfish.ai",
+		AuthHeader:   "x-api-key",
+		AuthScheme:   "raw",
+		FetchURL:     "https://api.fetch.tinyfish.ai",
+		FetchMethod:  "POST",
+		SearchURL:    "https://api.search.tinyfish.ai",
+		SearchMethod: "GET",
 	},
 	"runwayml": {
 		BaseURL:    "https://api.dev.runwayml.com/v1",
@@ -950,34 +1056,48 @@ var KnownProviders = map[string]ProviderConfig{
 		ImageURL:   "https://api.dev.runwayml.com/v1",
 	},
 	"searchapi": {
-		BaseURL:    "https://www.searchapi.io/api/v1/search",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:      "https://www.searchapi.io/api/v1/search",
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		SearchURL:    "https://www.searchapi.io/api/v1/search",
+		SearchMethod: "GET",
 	},
 	"serper": {
-		BaseURL:    "https://google.serper.dev",
-		AuthHeader: "x-api-key",
-		AuthScheme: "raw",
+		BaseURL:      "https://google.serper.dev",
+		AuthHeader:   "x-api-key",
+		AuthScheme:   "raw",
+		SearchURL:    "https://google.serper.dev/search",
+		SearchMethod: "POST",
 	},
 	"tavily": {
-		BaseURL:    "https://api.tavily.com/search",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:      "https://api.tavily.com/search",
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		SearchURL:    "https://api.tavily.com/search",
+		SearchMethod: "POST",
+		FetchURL:     "https://api.tavily.com/extract",
+		FetchMethod:  "POST",
 	},
 	"xquik": {
-		BaseURL:    "https://xquik.com/api/v1/x/tweets/search",
-		AuthHeader: "x-api-key",
-		AuthScheme: "raw",
+		BaseURL:      "https://xquik.com/api/v1/x/tweets/search",
+		AuthHeader:   "x-api-key",
+		AuthScheme:   "raw",
+		SearchURL:    "https://xquik.com/api/v1/x/tweets/search",
+		SearchMethod: "GET",
 	},
 	"ollama-search": {
-		BaseURL:    "https://ollama.com/api/web_search",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:      "https://ollama.com/api/web_search",
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		SearchURL:    "https://ollama.com/api/web_search",
+		SearchMethod: "POST",
 	},
 	"zai-search": {
-		BaseURL:    "https://api.z.ai/api/mcp/web_search",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:      "https://api.z.ai/api/mcp/web_search",
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		SearchURL:    "https://api.z.ai/api/mcp/web_search",
+		SearchMethod: "POST",
 	},
 	"vertex": {
 		BaseURL:    "https://aiplatform.googleapis.com/v1",
@@ -995,9 +1115,11 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"youcom": {
-		BaseURL:    "https://ydc-index.io/v1/search",
-		AuthHeader: "x-api-key",
-		AuthScheme: "raw",
+		BaseURL:      "https://ydc-index.io/v1/search",
+		AuthHeader:   "x-api-key",
+		AuthScheme:   "raw",
+		SearchURL:    "https://ydc-index.io/v1/search",
+		SearchMethod: "GET",
 	},
 	"qoder": {
 		BaseURL:    "https://api3.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation",
@@ -1016,6 +1138,22 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	// UC web (uncensored.com persona): image + video over the un-metered
+	// internal API; the credential is the full uncensored.com Cookie header
+	// and every request mints a short-lived Clerk session from __client.
+	"uc-web": {
+		BaseURL:    "https://internal.chatuncensored.ai",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	// veoaifree.com free tier: WordPress AJAX, no credentials (~6 requests
+	// per hour per IP); image and video lanes are executor-driven.
+	"veoaifree-web": {
+		BaseURL:    "https://veoaifree.com",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+		NoAuth:     true,
+	},
 
 	"sdwebui": {
 		BaseURL:  "http://localhost:7860/sdapi/v1/txt2img",
@@ -1023,8 +1161,10 @@ var KnownProviders = map[string]ProviderConfig{
 		ImageURL: "http://localhost:7860/sdapi/v1/txt2img",
 	},
 	"searxng": {
-		BaseURL: "http://localhost:4000/search",
-		NoAuth:  true,
+		BaseURL:      "http://localhost:4000/search",
+		NoAuth:       true,
+		SearchURL:    "http://localhost:4000/search",
+		SearchMethod: "GET",
 	},
 	"comfyui": {
 		BaseURL:  "http://localhost:8188",
@@ -1035,11 +1175,13 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL: "http://localhost:5000/api/tts",
 		NoAuth:  true,
 		TTSURL:  "http://localhost:5000/api/tts",
+		Hidden:  true,
 	},
 	"coqui": {
 		BaseURL: "http://localhost:5002/api/tts",
 		NoAuth:  true,
 		TTSURL:  "http://localhost:5002/api/tts",
+		Hidden:  true,
 	},
 	"edge-tts": {
 		BaseURL: "",
@@ -1069,9 +1211,11 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 	},
 	"google-pse": {
-		BaseURL:    "https://www.googleapis.com/customsearch/v1",
-		AuthHeader: "Authorization",
-		AuthScheme: "bearer",
+		BaseURL:      "https://www.googleapis.com/customsearch/v1",
+		AuthHeader:   "Authorization",
+		AuthScheme:   "bearer",
+		SearchURL:    "https://www.googleapis.com/customsearch/v1",
+		SearchMethod: "GET",
 	},
 	"alims-intl": {
 		BaseURL:    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
@@ -1092,6 +1236,11 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"daoxe": {
+		BaseURL:    "https://api.daoxe.com/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"bazaarlink": {
 		BaseURL:    "https://bazaarlink.ai/api/v1/chat/completions",
 		AuthHeader: "Authorization",
@@ -1101,6 +1250,7 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.bluesminds.com/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		Hidden:     true,
 	},
 	"devin-cli": {
 		BaseURL:    "devin://acp/stdio",
@@ -1122,6 +1272,16 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 	},
+	"nan": {
+		BaseURL:    "https://api.nan.builders/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
+	"openadapter": {
+		BaseURL:    "https://api.openadapter.in/v1/chat/completions",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 	"poolside": {
 		BaseURL:    "https://inference.poolside.ai/v1/chat/completions",
 		AuthHeader: "Authorization",
@@ -1131,6 +1291,7 @@ var KnownProviders = map[string]ProviderConfig{
 		BaseURL:    "https://api.sambanova.ai/v1/chat/completions",
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
+		Hidden:     true,
 	},
 	"tencent": {
 		BaseURL:    "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",

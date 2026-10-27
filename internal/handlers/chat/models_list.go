@@ -295,11 +295,32 @@ func (h *ChatHandler) connectedProviderIDs(conns []*models.ProviderConnection) m
 		}
 	}
 	for id, cfg := range providers.KnownProviders {
+		// No Hidden check here. This map only answers "is this provider
+		// reachable", and a hidden provider is reachable — it routes traffic
+		// from an existing connection. Being offered is a different question,
+		// decided at each publishing loop, because this map is not consulted on
+		// the paths where hiding matters most: ?all=1 and a fresh install both
+		// dump the catalog with no `usable` filter at all.
 		if cfg.NoAuth {
 			ids[id] = true
 		}
 	}
 	return ids
+}
+
+// hiddenProvider reports whether a provider id — or the canonical id it
+// resolves to — is marked Hidden. Hidden providers still serve traffic; they
+// are simply not offered, so every path that publishes a catalog skips them.
+//
+// The alias is resolved before the lookup because the publishing loops visit
+// each spelling that resolves to itself: `mimo-free` and its `mmf` alias are
+// two separate ProviderModels keys, so an alias-only check would let one
+// spelling through while blocking the other.
+func hiddenProvider(providerID string) bool {
+	if providerID == "" {
+		return false
+	}
+	return providers.KnownProviders[providers.ResolveAlias(providerID)].Hidden
 }
 
 // isUsableProvider reports whether a provider id (or its canonical form) is
@@ -426,6 +447,12 @@ func (h *ChatHandler) buildModelsListForMode(
 			if filterConnected && !isUsableProvider(alias, usable) {
 				continue
 			}
+			// The static dump is the path that publishes the most — it answers
+			// both a fresh install and every ?all=1 request — so it needs the
+			// hidden check as much as the connected path does.
+			if hiddenProvider(alias) {
+				continue
+			}
 			for _, mID := range models {
 				if isDisabled(alias, mID) || !isLLMModelEntry(alias, alias, alias, mID, false) {
 					continue
@@ -443,6 +470,14 @@ func (h *ChatHandler) buildModelsListForMode(
 	order := make([]string, 0, len(allConns))
 	for _, conn := range allConns {
 		if conn.Provider == "" || conn.IsActive == 0 {
+			continue
+		}
+		// An active connection to a hidden provider publishes that provider's
+		// whole catalog on the unfiltered paths (default mode, ?all=1), where
+		// `usable` is not consulted at all. Hidden is about being offered, not
+		// about being routable, so the connection still serves traffic — it just
+		// does not seed the listing.
+		if hiddenProvider(conn.Provider) {
 			continue
 		}
 		if filterConnected && !isUsableProvider(conn.Provider, usable) {
@@ -587,7 +622,22 @@ func (h *ChatHandler) appendConnectionModels(
 
 		declaredCtxLen, declaredMaxOut := typedCustomLimits[modelID][0], typedCustomLimits[modelID][1]
 
+		live, hasLive := liveByID[modelID]
+
 		ctxLen, maxOut := declaredCtxLen, declaredMaxOut
+		// A live catalogue that states its own limits outranks every static
+		// table: it describes the exact model this account may run, down to
+		// the window the provider will actually accept. Kiro's resolver only
+		// publishes a capability block, so it keeps upstream's behaviour of
+		// reporting the table default (see the branch below).
+		if hasLive && live.LimitsAuthoritative {
+			if ctxLen == 0 {
+				ctxLen = live.ContextLength
+			}
+			if maxOut == 0 {
+				maxOut = live.MaxOutput
+			}
+		}
 		// Anything the operator did not declare comes from the same chain that
 		// fills `capabilities` (per-model caps → catalog → substring table), so
 		// context_length / max_completion_tokens can never disagree with it.
@@ -603,7 +653,7 @@ func (h *ChatHandler) appendConnectionModels(
 		// {thinking, agentic}). Upstream then uses that block verbatim and
 		// fills the window from the static fallback, so a kiro model reports
 		// context_length from the table default rather than the live payload.
-		if live, ok := liveByID[modelID]; ok && live.Capabilities != nil {
+		if hasLive && live.Capabilities != nil {
 			data = append(data, ModelInfoObject{
 				ID:                  fullID,
 				Object:              "model",
@@ -616,7 +666,7 @@ func (h *ChatHandler) appendConnectionModels(
 		}
 		// Live catalogs (grok-cli) publish limits the static table may not
 		// know; use them when it has nothing to say.
-		if live, ok := liveByID[modelID]; ok {
+		if hasLive {
 			if ctxLen == 0 {
 				ctxLen = live.ContextLength
 			}
@@ -670,6 +720,18 @@ func appendNoAuthCatalogModels(
 		if !providers.IsNoAuthProvider(alias) {
 			continue
 		}
+		// Hidden providers serve traffic without being offered. Checked on the
+		// canonical id so every spelling of the same provider (mimo-free and its
+		// mmf alias) leaves the catalog together — this loop publishes each
+		// alias that resolves to itself, so an alias-only check would let one
+		// spelling through while blocking the other.
+		canonical := providers.ResolveAlias(alias)
+		if canonical == "" {
+			canonical = alias
+		}
+		if providers.KnownProviders[canonical].Hidden {
+			continue
+		}
 		for _, modelID := range modelIDs {
 			if isDisabled(alias, modelID) || !isLLMModelEntry(alias, alias, alias, modelID, false) {
 				continue
@@ -720,6 +782,13 @@ func (h *ChatHandler) appendLooseCustomModels(
 	customs := h.customModelsByProvider()
 	for providerID, list := range customs {
 		if filterConnected && !isUsableProvider(providerID, usable) {
+			continue
+		}
+		// Custom rows are keyed by provider, so this loop is the second way a
+		// hidden provider can reach the listing: the static dump above skips it,
+		// but an operator-pinned custom model on mimo-free would still publish
+		// `mimo-free/<id>` under ?all=1 and on a fresh install.
+		if hiddenProvider(providerID) {
 			continue
 		}
 		prefix := providerID
@@ -1159,3 +1228,16 @@ func (h *ChatHandler) modelAliasTargets() map[string]string {
 	}
 	return out
 }
+
+// BuildModelsListResult exposes the model-list builder to the dashboard, which
+// needs the same catalog the engine route serves but without the per-key
+// access filter: a dashboard session is not an engine API key, so the engine
+// route answers 401 to the SPA. mode is the caller's choice; the dashboard
+// uses ListModeCatalog to see every model the gateway can route.
+func (h *ChatHandler) BuildModelsListResult(ctx context.Context, mode ModelsListMode) ModelsListResult {
+	return h.buildModelsListResult(ctx, mode)
+}
+
+// ListModeCatalog is the mode that forces the full static catalog dump plus
+// custom models, regardless of how many connections are configured.
+const ListModeCatalog = modeListCatalog

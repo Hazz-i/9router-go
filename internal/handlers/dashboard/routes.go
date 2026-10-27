@@ -29,6 +29,10 @@ type DashboardHandler struct {
 	// is optional: a handler built outside a boot (tests, tooling) has none, and
 	// the live usage fields then read zero rather than being invented.
 	Limiter *middleware.RateLimiter
+	// jailbreakImport fetches prompt collections from GitHub for the preset
+	// library. Nil means the production importer; a test points it at an
+	// httptest server.
+	jailbreakImport *jailbreakImporter
 }
 
 // NewDashboardHandler initializes a DashboardHandler with the provided Repo.
@@ -44,10 +48,23 @@ func NewDashboardHandler(repo *db.Repo, ts ...*shared.TokenSaverConfig) *Dashboa
 	return h
 }
 
+// importer returns the configured GitHub importer, or the production one.
+func (h *DashboardHandler) importer() *jailbreakImporter {
+	if h.jailbreakImport != nil {
+		return h.jailbreakImport
+	}
+	return defaultJailbreakImporter
+}
+
 // getURLParam retrieves a route parameter from Chi URLParam or standard PathValue.
 func getURLParam(r *http.Request, key string) string {
 	if v := chi.URLParam(r, key); v != "" {
 		return v
+	}
+	if key == "key" {
+		if v := chi.URLParam(r, "*"); v != "" {
+			return v
+		}
 	}
 	return r.PathValue(key)
 }
@@ -65,6 +82,9 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/connections/{id}/test", h.HandleTestConnection)
 		r.Post("/providers/{id}/test", h.HandleTestConnection)
 		r.Get("/providers/{id}/models", h.HandleGetConnectionModels)
+		// Bulk removal for the rows the import path writes; the single-row form
+		// stays at DELETE /models/custom/{key}.
+		r.Delete("/providers/{id}/models", h.HandleDeleteProviderModels)
 		r.Get("/providers/{id}/overrides", h.HandleGetProviderOverrides)
 		r.Put("/providers/{id}/overrides", h.HandleSaveProviderOverrides)
 		r.Post("/providers/validate", h.HandleValidateProvider)
@@ -86,7 +106,15 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/combos", h.HandleCreateCombo)
 		r.Post("/combos/auto-free", h.HandleAutoFreeCombo)
 		r.Post("/combos/auto-family", h.HandleAutoFamilyCombos)
+		r.Get("/combos/presets", h.HandleGetComboPresets)
+		r.Post("/combos/presets", h.HandleCreateComboPresets)
 		r.Put("/combos/{id}", h.HandleUpdateCombo)
+		// Smart select combo: dry-run a rule list, and apply every combo's rules
+		// on demand. The automatic half runs on each model write.
+		r.Post("/combos/reconcile", h.HandleReconcileSmartCombos)
+		r.Post("/combos/{id}/smart/preview", h.HandleComboSmartPreview)
+		r.Post("/combos/{id}/smart/load", h.HandleComboSmartLoad)
+		r.Get("/models/meta", h.HandleGetModelMeta)
 		r.Delete("/combos/{id}", h.HandleDeleteCombo)
 
 		// Proxy Pools
@@ -102,6 +130,8 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Delete("/keys/{id}", h.HandleDeleteApiKey)
 		r.Put("/keys/{id}/toggle", h.HandleToggleApiKey)
 		r.Post("/keys/{id}/rotate", h.HandleRotateApiKey)
+		r.Get("/keys/{id}/models", h.HandleGetApiKeyModels)
+		r.Put("/keys/{id}/models", h.HandleSetApiKeyModels)
 		r.Put("/keys/{id}", h.HandleUpdateApiKey)
 
 		// F-3 Plans: reusable policy templates the keys inherit from.
@@ -124,13 +154,37 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Delete("/guardrails/policies/{id}", h.HandleDeleteGuardrailPolicy)
 		r.Get("/guardrails/logs", h.HandleListGuardrailLogs)
 
+		// Jailbreak: agent prompt presets library; per-model preset binding.
+		r.Get("/jailbreak", h.HandleGetJailbreak)
+		r.Put("/jailbreak", h.HandlePutJailbreak)
+		r.Get("/jailbreak/presets", h.HandleListJailbreakPresets)
+		r.Put("/jailbreak/presets", h.HandlePutJailbreakPreset)
+		r.Delete("/jailbreak/presets/{id}", h.HandleDeleteJailbreakPreset)
+		r.Post("/jailbreak/presets/{id}/duplicate", h.HandleDuplicateJailbreakPreset)
+		r.Get("/jailbreak/models", h.HandleListJailbreakModels)
+		r.Get("/jailbreak/models/catalog", h.HandleJailbreakModelCatalog)
+		r.Put("/jailbreak/models", h.HandleSetJailbreakModel)
+		r.Delete("/jailbreak/models", h.HandleDeleteJailbreakModel)
+		r.Get("/jailbreak/excludes", h.HandleGetJailbreakExcludes)
+		r.Put("/jailbreak/excludes", h.HandlePutJailbreakExcludes)
+		r.Post("/jailbreak/import", h.HandleImportJailbreak)
+		r.Post("/jailbreak/resolve", h.HandleExplainJailbreak)
+		r.Get("/jailbreak/usage", h.HandleJailbreakUsage)
+		r.Post("/jailbreak/preview", h.HandlePreviewJailbreak)
+		r.Put("/jailbreak/presets/order", h.HandleReorderJailbreakPresets)
+		r.Post("/jailbreak/presets/upload", h.HandleUploadJailbreakPreset)
+
 		// Models
 		r.Get("/models/custom", h.HandleGetCustomModels)
 		r.Get("/models/caps", h.HandleGetModelCaps)
 		r.Post("/models/custom", h.HandleSaveCustomModel)
 		r.Delete("/models/custom/{key}", h.HandleDeleteCustomModel)
+		r.Delete("/models/custom/*", h.HandleDeleteCustomModel)
 		r.Get("/models/disabled", h.HandleGetDisabledModels)
 		r.Put("/models/disabled/{provider}", h.HandleSaveDisabledModels)
+		r.Post("/models/auto-disable", h.HandleAutoDisableModels)
+		r.Get("/models/health", h.HandleGetModelHealth)
+		r.Put("/models/health", h.HandleSaveModelHealth)
 
 		// Settings
 		r.Get("/settings", h.HandleGetSettings)
@@ -142,6 +196,9 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		r.Post("/settings/database/prune-usage", h.HandlePruneUsageHistory)
 		r.Post("/settings/database/vacuum", h.HandleVacuumDatabase)
 		r.Post("/settings/proxy-test", h.HandleProxyTest)
+		// White-label logo upload: the file lands under DATA_DIR/uploads and
+		// appLogoUrl is rewritten to the path this gateway serves it from.
+		r.Post("/settings/logo", h.HandleUploadLogo)
 		r.Post("/settings/currency/refresh", h.HandleRefreshCurrencyRates)
 
 		// Token Saver Testing Benches
@@ -173,4 +230,11 @@ func RegisterRoutes(r chi.Router, h *DashboardHandler) {
 		// Compression Analytics
 		r.Get("/analytics/compression", h.HandleGetCompressionAnalytics)
 	})
+	// Operator-supplied dashboard assets (the white-label logo). Registered
+	// here as well as in SetupServerRouter because that table is mounted by
+	// tests only: a route added there alone is reachable in a unit test and
+	// 404s on the real server, which is how the upload half was nearly
+	// shipped. The page gate that guards it in production is applied by
+	// SetupServerRouter, not here — the test router has no session to present.
+	r.Get("/uploads/*", h.HandleServeUploads)
 }

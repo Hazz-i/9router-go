@@ -103,6 +103,70 @@ func ClearCustomModelCaps() {
 	InvalidateCapabilitiesCache()
 }
 
+// jailbreakNameMarkers are the tokens a model id carries when the model is
+// sold as uncensored. They are matched as a hyphen/underscore-delimited
+// segment, not a substring: "unrestricted" inside "unrestrictedly-fast" is a
+// false positive, and a bare "jail" is not a marker at all.
+var jailbreakNameMarkers = []string{
+	"uncensored",
+	"unrestricted",
+	"unfiltered",
+	"jailbreak",
+	"jailbroken",
+	"nsfw",
+	"nofilter",
+}
+
+// jailbreakNamePairs are two-token markers: the id spells them as two
+// hyphen-delimited segments ("no-filter"), so a single-segment comparison
+// never sees them. Both segments must be adjacent and in order.
+var jailbreakNamePairs = [][2]string{
+	{"no", "filter"},
+	{"no", "moderation"},
+	{"no", "limits"},
+}
+
+// IsJailbreakModel reports whether a model id names itself uncensored.
+//
+// This is the fallback half of the Jailbreak capability: an operator who never
+// opened the Add Custom Model dialog still gets the chip lit on a model whose
+// id already says what it is. The explicit flag wins either way — the caller
+// ORs the two — so a model marked by hand is never un-marked by a name that
+// happens to contain none of these tokens.
+//
+// A thinking suffix ("(high)") is stripped first, because a level marker is
+// not a name segment and "claude-x(high)" must not be read as a match.
+func IsJailbreakModel(model string) bool {
+	clean := model
+	if paren := strings.IndexByte(clean, '('); paren != -1 {
+		clean = strings.TrimSpace(clean[:paren])
+	}
+	// The bare id is what a marker would be attached to: "vendor/model-jailbreak"
+	// carries it after the slash, and the vendor half is not part of the name.
+	if _, after, ok := strings.CutLast(clean, "/"); ok {
+		clean = after
+	}
+	lower := strings.ToLower(clean)
+	segments := strings.FieldsFunc(lower, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.' || r == ' '
+	})
+	for _, seg := range segments {
+		for _, marker := range jailbreakNameMarkers {
+			if seg == marker {
+				return true
+			}
+		}
+	}
+	for _, pair := range jailbreakNamePairs {
+		for i := 0; i+1 < len(segments); i++ {
+			if segments[i] == pair[0] && segments[i+1] == pair[1] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Capabilities represents what a model can do beyond plain text, plus the shape
 // of its thinking control on the wire. The thinking fields are only meaningful
 // when Reasoning is true; an empty ThinkingFormat means "derive from transport".
@@ -116,6 +180,14 @@ type Capabilities struct {
 	Search      bool
 	Tools       bool
 	Reasoning   bool
+	// Jailbreak reports that the model is uncensored / unrestricted — it
+	// accepts prompts a policy-filtered model refuses. It is not a modality
+	// and not a wire feature: nothing in the request path reads it, and no
+	// upstream table declares it. It exists so an operator can mark the
+	// models they know behave this way and filter the dashboard list on it,
+	// instead of recognising them by name. The name heuristic below is the
+	// fallback for a model whose id already says so.
+	Jailbreak bool
 	// ThinkingFormat is the wire shape of the thinking control
 	// (openai, claude-adaptive, claude-budget, gemini-level, gemini-budget,
 	// zai, qwen, kimi, deepseek, commandcode, minimax, hunyuan, step).
@@ -255,10 +327,22 @@ var modelCapabilities = map[string]Capabilities{
 	// which produced thinking{type:"enabled"} and a 400 on the real API.
 	"claude-fable-5":               {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive"},
 	"claude-fable-5-1":             {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
-	"glm-5.2":                      {Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingCanDisable: new(false)},
+	"glm-5.2":                      {Reasoning: true, Tools: true, ThinkingFormat: "zai", ThinkingEffortSupported: true, ThinkingCanDisable: new(false)},
+	// Upstream b6a9ca43: the exact glm-5.2 entry shadows the *glm-5.2*
+	// pattern completely, so it must repeat the pattern's
+	// ThinkingEffortSupported or reasoning_effort is dropped for GLM-5.2
+	// (supported from 5.2 onward).
+	// OpenCode serves the same weights under this free id from its own
+	// inference service, which validates the body strictly: the zai thinking
+	// object the *glm-5.3* pattern emits answers 400 unknown field
+	// "thinking" while reasoning_effort is accepted (upstream 32c5f30a,
+	// probed live on /inference/v1 and /zen/v1). Global like upstream: no
+	// other provider serves this id.
+	"glm-5.3-flash-free":           {Vision: true, VideoInput: true, PDF: true, Reasoning: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false), ContextWindow: 1000000, MaxOutput: 128000},
 	"glm-4.6v":                     {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "zai"},
 	"glm-4.5v":                     {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "zai"},
 	"deepseek-v4-flash-vision-exp": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
+	"sensenova-6.8-flash-lite":     {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
 	"deepseek-v4-vision":           {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek", ThinkingEffortSupported: true},
 	"deepseek-v4.1-flash":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
 	// Some gateways publish this model under the hyphenated id (dash instead
@@ -268,14 +352,30 @@ var modelCapabilities = map[string]Capabilities{
 	"deepseek-flash":                  {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "deepseek"},
 	"muse-spark-1.2-contributor-free": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
 	"muse-spark-1.3-contributor-free": {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai"},
-	"vision-model":                    {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen"},
-	"coder-model":                     {Reasoning: true, Tools: true, ThinkingFormat: "qwen"},
-	"kimi-k3":                         {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
-	"k3":                              {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
-	"kimi-for-coding":                 {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
-	"kimi-for-coding-highspeed":       {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
-	"kimi-k2.7-code":                  {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
-	"kimi-k2.7-code-highspeed":        {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
+	// OpenCode Free ids newer than the tables above (upstream #2690): without
+	// a row they fall through to text-only defaults and the client's
+	// reasoning_effort is stripped before it reaches the upstream. Modality
+	// and limit values are taken verbatim from upstream (models.dev).
+	"space-bunny-free":          {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 524288},
+	"space-bunny":               {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 524288},
+	"big-pickle":                {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 32000},
+	"exo-free":                  {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
+	"fledge-alpha-free":         {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1048576, MaxOutput: 131072},
+	"longcat-2.0":               {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+	"longcat-2.0-free":          {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+	"longcat-2.5-preview-free":  {Vision: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+	"north-mini-code-free":      {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 256000, MaxOutput: 64000},
+	"ring-2.6-1t-free":          {Reasoning: true, ThinkingFormat: "openai", ContextWindow: 262000, MaxOutput: 66000},
+	"x-preview-f-free":          {Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ContextWindow: 1000000, MaxOutput: 131072},
+	"vision-model":              {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "qwen"},
+	"coder-model":               {Reasoning: true, Tools: true, ThinkingFormat: "qwen"},
+	"kimi-k3":                   {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
+	"k3":                        {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
+	"kimi-k3.1-pro":             {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false), ContextWindow: 1048576, MaxOutput: 131072},
+	"kimi-for-coding":           {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
+	"kimi-for-coding-highspeed": {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
+	"kimi-k2.7-code":            {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
+	"kimi-k2.7-code-highspeed":  {Vision: true, VideoInput: true, Reasoning: true, Tools: true, ThinkingFormat: "kimi", ThinkingCanDisable: new(false)},
 }
 
 // codexExtendedContextWindow is the context window the codex registry
@@ -301,7 +401,58 @@ var devinCLIGPTCaps = Capabilities{
 	Vision: true, Reasoning: true, Search: true, Tools: true,
 	ThinkingFormat: "openai", ContextWindow: 200000, MaxOutput: 128000,
 }
+
+// qoderCapabilities is the Qoder model capability table. The model ids are
+// opaque (dmodel, kmodel, qmodel_38max), so the name heuristics in the
+// pattern table match none of them — without this every Qoder model is
+// reported text-only and an image sent by a client is replaced by a
+// placeholder before it ever reaches the model. Context/output limits mirror
+// what /algo/api/v2/model/list reports.
+var qoderCapabilities = map[string]Capabilities{
+	// Tier aliases resolve to a variable target upstream; keep them text-only
+	// and on the default window rather than guessing.
+	"auto":      {ContextWindow: 200000, MaxOutput: 32768},
+	"efficient": {ContextWindow: 200000, MaxOutput: 32768},
+	"lite":      {ContextWindow: 200000, MaxOutput: 32768},
+	// Concrete ids read images back, so they are vision-capable.
+	"ultimate":      {Vision: true, Reasoning: true, ContextWindow: 200000, MaxOutput: 65536},
+	"performance":   {Vision: true, ContextWindow: 200000, MaxOutput: 65536},
+	"qmodel_38max":  {Vision: true, Reasoning: true, ContextWindow: 200000, MaxOutput: 65536},
+	"qmodel_latest": {Vision: true, ContextWindow: 200000, MaxOutput: 65536},
+	"qmodel":        {Vision: true, ContextWindow: 200000, MaxOutput: 65536},
+	"qfmodel":       {Vision: true, Reasoning: true, ContextWindow: 200000, MaxOutput: 65536},
+	"kmodel_latest": {Vision: true, ContextWindow: 200000, MaxOutput: 65536},
+	"kmodel":        {Vision: true, ContextWindow: 200000, MaxOutput: 65536},
+	"gmodel":        {Vision: true, Reasoning: true, ContextWindow: 200000, MaxOutput: 65536},
+	"gfmodel":       {Vision: true, Reasoning: true, ContextWindow: 200000, MaxOutput: 65536},
+	"dmodel":        {Vision: true, Reasoning: true, ContextWindow: 200000, MaxOutput: 65536},
+	"dfmodel":       {Vision: true, Reasoning: true, ContextWindow: 200000, MaxOutput: 65536},
+	"mmodel":        {Vision: true, ContextWindow: 200000, MaxOutput: 65536},
+	// Frontier reasoning pair; absent from many per-account catalogs, so they
+	// are routed through a static model_config.
+	"smodel": {Vision: true, Reasoning: true, ContextWindow: 180000, MaxOutput: 65536},
+	"cmodel": {Vision: true, Reasoning: true, ContextWindow: 180000, MaxOutput: 65536},
+}
+
 var providerCapabilities = map[string]map[string]Capabilities{
+	"qoder": qoderCapabilities,
+	// Qoder CN serves the identical model catalog from the CN gateway, so it
+	// shares the intl Qoder capability table verbatim.
+	"qoder-cn": qoderCapabilities,
+	// OpenCode Free (oc): the free lane's MiMo route is OpenRouter-backed and
+	// takes the plain OpenAI reasoning_effort enum verbatim ("none" really
+	// drops thinking). The global *mimo*v2.6* pattern describes Xiaomi's own
+	// API (DeepSeek-shaped thinking object, always on), which this lane
+	// ignores: thinking.type:disabled still streamed reasoning. Limits repeat
+	// the family pattern deliberately: the synced catalog carries no opencode
+	// limit delta for this id, so 1M/131k is what the lane already published.
+	"opencode": {
+		"mimo-v2.6-flash-free": {Vision: true, AudioInput: true, VideoInput: true, Reasoning: true, ThinkingFormat: "openai", ThinkingCanDisable: new(true), ContextWindow: 1048576, MaxOutput: 131072},
+		// The free lane's deepseek-v4.1-flash rejects prompts above ~330k tokens
+		// (upstream #5097); pin the published window so clients compact instead
+		// of hard-failing mid-session.
+		"deepseek-v4.1-flash-free": {Vision: true, Reasoning: true, ThinkingFormat: "deepseek", ContextWindow: 330000, MaxOutput: 128000},
+	},
 	"nvidia": {
 		"minimaxai/minimax-m2.7":        {Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
 		"minimaxai/minimax-m3":          {Vision: true, Reasoning: true, Tools: true, ThinkingFormat: "openai", ThinkingCanDisable: new(false)},
@@ -408,6 +559,21 @@ var providerCapabilities = map[string]map[string]Capabilities{
 		"MiniMax-M2.7":               {Reasoning: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 200000, MaxOutput: 128000},
 		"MiniMax-M2.7-highspeed":     {Reasoning: true, Tools: true, ThinkingFormat: "claude-adaptive", ThinkingCanDisable: new(false), ContextWindow: 200000, MaxOutput: 128000},
 	},
+	// Zed's hosted Anthropic lane serves claude-haiku-5-5 with adaptive
+	// thinking. The global *claude*haiku* pattern emits the budget shape
+	// (thinking.type.enabled + budget_tokens), which Zed rejects with 400:
+	// `"thinking.type.enabled" is not supported for this model. Use
+	// "thinking.type.adaptive" and "output_config.effort"`. claude-adaptive
+	// emits exactly that pair, so the id is pinned here for the zed lane only
+	// — other lanes keep the budget shape for the same id. Port of upstream
+	// decolua/9router open-sse/providers/capabilities.js, which pins the same
+	// id for opencode-go; Zed routes this model through the same Anthropic
+	// backend. Limits follow the model, not the pattern: the Zed catalogue
+	// reports 1M context / 128k output, not the 200k/8192 the haiku substring
+	// table guesses.
+	"zed": {
+		"claude-haiku-5-5": {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "claude-adaptive", ContextWindow: 1000000, MaxOutput: 128000},
+	},
 }
 
 func init() {
@@ -479,6 +645,17 @@ func init() {
 		},
 	}
 
+	providerCapabilities["nous"] = map[string]Capabilities{
+		"meituan/longcat-2.0:free":         {Tools: true, Reasoning: true, ThinkingFormat: "nous", ContextWindow: 1048756, MaxOutput: 262144},
+		"meituan/longcat-2.5-preview:free": {Tools: true, Vision: true, Reasoning: true, ThinkingFormat: "nous", ContextWindow: 1048576, MaxOutput: 131072},
+		"stepfun/step-5-preview:free":      {Tools: true, Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "nous", ContextWindow: 1000000, MaxOutput: 64000},
+		"upstage/solar-mini4:free":         {Tools: true, Reasoning: true, ThinkingFormat: "nous", ContextWindow: 524288, MaxOutput: 131072},
+		"stepfun/step-3.7-flash:free":      {Tools: true, Vision: true, VideoInput: true, Reasoning: true, ThinkingFormat: "nous", ContextWindow: 262144, MaxOutput: 256000},
+		"poolside/laguna-s-2.1:free":       {Tools: true, Reasoning: true, ThinkingFormat: "nous", ContextWindow: 262144, MaxOutput: 131072},
+		"poolside/laguna-xs-2.1:free":      {Tools: true, Reasoning: true, ThinkingFormat: "nous", ContextWindow: 262144, MaxOutput: 32768},
+		"stealth/missingno":                {Tools: true, Reasoning: true, ThinkingFormat: "nous", ContextWindow: 262144, MaxOutput: 131072},
+	}
+
 	// `cx` is the alias codex publishes under, so it serves the same catalog
 	// upstream does (open-sse/providers/capabilities.js:
 	// PROVIDER_CAPABILITIES.cx = PROVIDER_CAPABILITIES.codex).
@@ -488,6 +665,32 @@ func init() {
 	// table rather than restating it (upstream
 	// PROVIDER_CAPABILITIES["minimax-code-global"] = PROVIDER_CAPABILITIES["minimax-code"]).
 	providerCapabilities["minimax-code-global"] = providerCapabilities["minimax-code"]
+
+	// DaoXE (daoxe) — OpenAI-compatible free tier
+	providerCapabilities["daoxe"] = map[string]Capabilities{
+		"gpt-4o":        {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 16384},
+		"gpt-4o-mini":   {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 16384},
+		"gpt-3.5-turbo": {Tools: true},
+	}
+
+	// NaN.Builders (nanbuilders) — OpenAI-compatible free tier
+	providerCapabilities["nanbuilders"] = map[string]Capabilities{
+		"gpt-4o":        {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 16384},
+		"gpt-4o-mini":   {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 16384},
+		"gpt-3.5-turbo": {Tools: true},
+	}
+
+	// OpenAdapter (openadapter) — OpenAI-compatible free tier
+	providerCapabilities["openadapter"] = map[string]Capabilities{
+		"gpt-4o":        {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 16384},
+		"gpt-4o-mini":   {Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 128000, MaxOutput: 16384},
+		"gpt-3.5-turbo": {Tools: true},
+	}
+
+	// Aliases share the same capabilities catalog
+	providerCapabilities["dx"] = providerCapabilities["daoxe"]
+	providerCapabilities["nan"] = providerCapabilities["nanbuilders"]
+	providerCapabilities["oad"] = providerCapabilities["openadapter"]
 
 	initPatternIndex()
 }
@@ -588,6 +791,12 @@ var patternCapabilities = []patternCapability{
 
 	{pattern: "*grok*image*", caps: Capabilities{ImageOutput: true, Tools: true}},
 	{pattern: "*grok-code*", caps: Capabilities{Reasoning: true, Tools: true, ThinkingFormat: "openai"}},
+	// Grok 4.7 needs its own row: without it the id falls to the *grok-4*
+	// catch-all and then to the token-limit table's 128000/4096 floor, and
+	// combos report the smallest member window. Upstream b0655314 probed the
+	// 500k limit on the Grok CLI proxy (476k prompt accepted, 614k rejected
+	// with "613738 tokens > 500000 tokens").
+	{pattern: "*grok-4.7*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai", ContextWindow: 500000, MaxOutput: 500000}},
 	{pattern: "*grok-4.6*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"}},
 	{pattern: "*grok-4.5*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"}},
 	{pattern: "*grok-4*", caps: Capabilities{Vision: true, Reasoning: true, Search: true, Tools: true, ThinkingFormat: "openai"}},
@@ -781,6 +990,8 @@ func lookupModelTokenLimits(model string) [2]int {
 		return [2]int{1000000, 128000}
 	case strings.Contains(m, "gemini-1.5") || strings.Contains(m, "gemini-2.0") || strings.Contains(m, "gemini-2.5") || strings.Contains(m, "gemini-3") || strings.Contains(m, "gemini-4") || strings.Contains(m, "gemini-argon") || strings.Contains(m, "glm-5.3-flash"):
 		return [2]int{1048576, 65536}
+	case strings.Contains(m, "grok-4.7"):
+		return [2]int{500000, 500000}
 	case strings.Contains(m, "grok-4.5") || strings.Contains(m, "grok-4.6"):
 		return [2]int{524288, 32768}
 	case strings.Contains(m, "claude-3") || strings.Contains(m, "claude-sonnet") || strings.Contains(m, "claude-opus") || strings.Contains(m, "claude-haiku"):
@@ -1002,6 +1213,7 @@ type CapabilitiesDetail struct {
 	Search                  bool    `json:"search"`
 	Tools                   bool    `json:"tools"`
 	Reasoning               bool    `json:"reasoning"`
+	Jailbreak               bool    `json:"jailbreak"`
 	ThinkingFormat          *string `json:"thinkingFormat"`
 	ThinkingCanDisable      bool    `json:"thinkingCanDisable"`
 	ThinkingRange           any     `json:"thinkingRange"`
@@ -1152,6 +1364,7 @@ func GetCapabilitiesDetailForModel(provider, model string) CapabilitiesDetail {
 		Search:                  caps.Search,
 		Tools:                   caps.Tools,
 		Reasoning:               caps.Reasoning,
+		Jailbreak:               caps.Jailbreak || IsJailbreakModel(model),
 		ThinkingFormat:          thinkingFormat,
 		ThinkingCanDisable:      canDisableThinking(caps),
 		ThinkingRange:           thinkingRange,
@@ -1205,6 +1418,9 @@ func applyCustomCaps(dst *Capabilities, custom Capabilities) {
 	}
 	if custom.Reasoning {
 		dst.Reasoning = true
+	}
+	if custom.Jailbreak {
+		dst.Jailbreak = true
 	}
 	if custom.ContextWindow != 0 {
 		dst.ContextWindow = custom.ContextWindow

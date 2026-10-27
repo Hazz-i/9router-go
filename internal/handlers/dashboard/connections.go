@@ -864,6 +864,12 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 	if conn.Data != "" {
 		_ = json.Unmarshal([]byte(conn.Data), &connData)
 	}
+	// The Zed catalogue branch reads the same fields through a named type.
+	zedData := &zedConnectionData{
+		APIKey:               connData.APIKey,
+		AccessToken:          connData.AccessToken,
+		ProviderSpecificData: connData.ProviderSpecificData,
+	}
 
 	type modelItem struct {
 		ID           string          `json:"id"`
@@ -1083,6 +1089,23 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Zed's catalogue is behind a two-layer auth: the account token is traded
+	// for a short-lived LLM token first, so it needs its own branch rather
+	// than the plain bearer /models fetch.
+	if conn.Provider == "zed" {
+		zedModels, err := fetchZedCatalogModels(r.Context(), conn, zedData)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch Zed models: "+err.Error())
+			return
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       zedModels,
+		})
+		return
+	}
+
 	// OpenAI-compatible aggregators with a live /v1/models catalogue. The
 	// connection's key is the only credential these need.
 	if listURL := providers.ModelsListURL(conn.Provider); listURL != "" {
@@ -1116,6 +1139,14 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 		items := listResp.Data
 		if len(items) == 0 {
 			items = listResp.Models
+		}
+		if conn.Provider == "nous" {
+			handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+				"provider":     conn.Provider,
+				"connectionId": conn.ID,
+				"models":       providers.NormalizeRoutedNousModels(items),
+			})
+			return
 		}
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 			"provider":     conn.Provider,

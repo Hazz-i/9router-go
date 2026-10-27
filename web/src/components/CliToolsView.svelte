@@ -440,6 +440,74 @@
         `Use api: openai-responses instead if a model does not stream correctly over Chat Completions.`,
       ],
     },
+    {
+      id: 'crush',
+      name: 'Crush',
+      category: 'cli',
+      image: '/providers/crush.png',
+      color: '#8B5CF6',
+      description: 'Crush AI terminal agent — configure ~/.config/crush/crush.json',
+      configType: 'guide',
+      instructions: [
+        `Add 9router-go to your Crush config in ~/.config/crush/crush.json:`,
+        `{"providers":{"9router":{"type":"openai-compat","base_url":"${localOrigin}/v1","api_key":"${snippetApiKey}","models":["claude-sonnet-4-6"]}}}`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update "api_key".`
+          : `Point your active model to 9router in crush.json or pass --provider 9router on startup.`,
+        `List available models: curl -s ${localOrigin}/v1/models -H "Authorization: Bearer ${snippetApiKey}"`,
+      ],
+    },
+    {
+      id: 'forge',
+      name: 'Forge',
+      category: 'cli',
+      image: '/providers/forge.png',
+      color: '#F97316',
+      description: 'Forge AI coding CLI — configure ~/.forge/config.toml',
+      configType: 'guide',
+      instructions: [
+        `Configure 9router-go endpoint under the [openai] section in ~/.forge/config.toml:`,
+        `[openai]\nbase_url = "${localOrigin}/v1"\napi_key = "${snippetApiKey}"`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update api_key.`
+          : `Run 'forge' to start working with models routed through 9router-go.`,
+        `Optionally override model via --model flag or config.toml default_model setting.`,
+      ],
+    },
+    {
+      id: 'smelt',
+      name: 'Smelt',
+      category: 'cli',
+      image: '/providers/smelt.svg',
+      color: '#E11D48',
+      description: 'Smelt terminal coding agent — configure ~/.smelt/config.json',
+      configType: 'guide',
+      instructions: [
+        `Add 9router-go gateway configuration to ~/.smelt/config.json:`,
+        `{"baseUrl":"${localOrigin}/v1","apiKey":"${snippetApiKey}","_managedBy":"9router"}`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update "apiKey".`
+          : `Launch 'smelt' in your workspace directory to begin.`,
+        `Compatible with standard OpenAI completions and Responses endpoints.`,
+      ],
+    },
+    {
+      id: 'codewhale',
+      name: 'CodeWhale',
+      category: 'cli',
+      image: '/providers/codewhale.svg',
+      color: '#06B6D4',
+      description: 'CodeWhale terminal developer suite — configure ~/.codewhale/config.toml',
+      configType: 'guide',
+      instructions: [
+        `Add 9router-go endpoint under [openai] in ~/.codewhale/config.toml:`,
+        `[openai]\nbase_url = "${localOrigin}/v1"\napi_key = "${snippetApiKey}"`,
+        noApiKey
+          ? `No API key exists yet — create one in API Keys first, then update api_key.`
+          : `Run 'codewhale' to begin terminal-assisted coding workflows.`,
+        `Verify connection with: codewhale check`,
+      ],
+    },
   ])
   let filteredTools = $derived(
     toolsCatalog.filter((tool) => {

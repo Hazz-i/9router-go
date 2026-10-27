@@ -2,6 +2,7 @@ package chat
 
 import (
 	json "encoding/json/v2"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +10,27 @@ import (
 
 	"9router/proxy/internal/constants"
 )
+
+const (
+	minRetryJitterMs = 100
+	maxRetryJitterMs = 400
+)
+
+// addRetryJitter adds a random jitter between minRetryJitterMs and maxRetryJitterMs
+// to a positive duration to prevent thundering-herd collisions on retry.
+func addRetryJitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	delta := maxRetryJitterMs - minRetryJitterMs
+	var jitter int64
+	if delta > 0 {
+		jitter = minRetryJitterMs + rand.Int64N(int64(delta))
+	} else {
+		jitter = minRetryJitterMs
+	}
+	return d + time.Duration(jitter)*time.Millisecond
+}
 
 // brief429RetryTolerance is the longest wait a rate-limited upstream may ask
 // for and still be worth repeating on the same client turn. It is the router's
@@ -92,9 +114,15 @@ func (p *passRetry) note(ue *upstreamError) {
 // carry over.
 func (p *passRetry) reset() { *p = passRetry{} }
 
-// wait returns how long to hold before repeating the pass, or 0 when the pass
-// must not be repeated.
-func (p *passRetry) wait() time.Duration { return comboPassRetryWait(p.earliest, p.rateLimited) }
+// wait returns how long to hold before repeating the pass (with bounded random jitter),
+// or 0 when the pass must not be repeated.
+func (p *passRetry) wait() time.Duration {
+	w := comboPassRetryWait(p.earliest, p.rateLimited)
+	if w <= 0 {
+		return 0
+	}
+	return addRetryJitter(w)
+}
 
 // writeError answers the client with lastErr, publishing the earliest
 // Retry-After the pass collected three ways: the Retry-After header, the
@@ -107,6 +135,24 @@ func (p *passRetry) wait() time.Duration { return comboPassRetryWait(p.earliest,
 // reset instant would send clients into a retry loop against a quota with no
 // known end.
 func (p *passRetry) writeError(cw *committedResponseWriter, lastErr *upstreamError) {
+	// A client that asked for a stream must be answered with one. The body is
+	// the same JSON either way; what changes is the envelope. Writing the bare
+	// document under a text/event-stream Content-Type leaves the client with no
+	// frame separator it can split on, and a strict SSE reader reports the
+	// first backslash it meets as `Unrecognized token '\'` — the status, type
+	// and code never reach it.
+	if cw.stream {
+		cw.Header().Set(constants.HeaderContentType, constants.ContentTypeEventStream)
+		cw.WriteHeader(lastErr.StatusCode)
+		frame := append([]byte("data: "), lastErr.Body...)
+		frame = append(frame, '\n', '\n')
+		_, _ = cw.Write(frame)
+		_, _ = cw.Write([]byte("data: [DONE]\n\n"))
+		if f, ok := cw.ResponseWriter.(http.Flusher); ok {
+			f.Flush()
+		}
+		return
+	}
 	// Set before any branch so the pass-through path below is a JSON body
 	// too. The upstream content type is not trusted here: a 429 served as
 	// text/html is what makes an SDK report a parse crash instead of a quota.

@@ -14,6 +14,7 @@
   import { periodLabel, type Period } from './analytics/types'
   import type { ViewOption } from './analytics/types'
   import { costIn } from '../lib/currency.svelte'
+  import { isPanelVisible } from '../lib/usagePanel.svelte'
 
   type CacheView = 'prompt' | 'semantic'
 
@@ -88,13 +89,20 @@
     }
   }
 
+  // The entries list is one of the panels the arrangement can hide, and only
+  // the Semantic view draws it. With it hidden the read would cost a request
+  // and the page weight of a table nobody sees (issue #506).
+  function entriesWanted(): boolean {
+    return activeView === 'semantic' && isPanelVisible('cache.entries')
+  }
+
   async function handleClearAll() {
     if (!confirm('Clear all semantic cache entries?')) return
     try {
       await api.deleteCache()
       notifications.success('Semantic cache cleared successfully')
       await loadStats()
-      await loadEntries()
+      if (entriesWanted()) await loadEntries()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       notifications.error(msg, 'Failed to clear cache')
@@ -106,7 +114,7 @@
       await api.deleteCacheEntry(id)
       notifications.success('Cache entry deleted')
       await loadStats()
-      await loadEntries()
+      if (entriesWanted()) await loadEntries()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       notifications.error(msg, 'Failed to delete entry')
@@ -121,7 +129,7 @@
       notifications.success(`Invalidated ${res.count ?? 0} entries for model ${m}`)
       invalidateModelInput = ''
       await loadStats()
-      await loadEntries()
+      if (entriesWanted()) await loadEntries()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       notifications.error(msg, 'Failed to invalidate model')
@@ -139,19 +147,19 @@
   // never reads; the reverse needs nothing extra.
   function selectView(next: CacheView) {
     activeView = next
-    if (next === 'semantic') loadEntries()
+    if (entriesWanted()) loadEntries()
   }
 
   // One refresh for both halves of the section: the entries list is what the
   // Semantic view shows, the stats what everything else on this section reads.
   function refreshAll() {
     loadStats()
-    if (activeView === 'semantic') loadEntries()
+    if (entriesWanted()) loadEntries()
   }
 
   onMount(() => {
     loadStats()
-    loadEntries()
+    if (entriesWanted()) loadEntries()
   })
 
   onDestroy(() => {
@@ -395,6 +403,7 @@
     <!-- Hourly trend. The window picker moved up into the section header: it
          chooses the period for the cards, the breakdowns and this chart at
          once, so it can no longer sit here scoping only the chart. -->
+    {#if isPanelVisible('cache.trend')}
     <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm">
       <div class="mb-4">
         <h3 class="text-sm font-semibold text-text-main flex items-center gap-1.5">
@@ -462,8 +471,10 @@
         </div>
       {/if}
     </div>
+    {/if}
 
     <!-- Provider Breakdown Table -->
+    {#if isPanelVisible('cache.provider')}
     <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm">
       <h3 class="text-sm font-semibold text-text-main mb-3 flex items-center gap-1.5">
         <span class="material-symbols-outlined text-[18px] text-brand-500">dns</span>
@@ -518,8 +529,10 @@
           </p>
         {/if}
     </div>
+    {/if}
 
     <!-- Model Breakdown Table -->
+    {#if isPanelVisible('cache.model')}
     <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm">
       <h3 class="text-sm font-semibold text-text-main mb-3 flex items-center gap-1.5">
         <span class="material-symbols-outlined text-[18px] text-brand-500">model_training</span>
@@ -573,6 +586,7 @@
           </p>
         {/if}
     </div>
+    {/if}
 
   {:else if activeView === 'semantic'}
     <!-- Semantic Cache View -->
@@ -627,6 +641,7 @@
     </div>
 
     <!-- Management & Actions Bar -->
+    {#if isPanelVisible('cache.invalidation')}
     <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm space-y-4">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -666,8 +681,10 @@
         </button>
       </div>
     </div>
+    {/if}
 
     <!-- Entries Table -->
+    {#if isPanelVisible('cache.entries')}
     <div class="rounded-2xl border border-border bg-surface p-5 shadow-sm space-y-4">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div class="flex items-center gap-2">
@@ -799,5 +816,6 @@
         {/if}
       {/if}
     </div>
+    {/if}
   {/if}
 </div>

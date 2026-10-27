@@ -146,7 +146,6 @@ func coreSchema() []tableDef {
 			},
 			indexes: []string{
 				"CREATE INDEX IF NOT EXISTS idx_uh_ts ON usageHistory(timestamp DESC)",
-				"CREATE INDEX IF NOT EXISTS idx_uh_provider ON usageHistory(provider)",
 				"CREATE INDEX IF NOT EXISTS idx_uh_model ON usageHistory(model)",
 				"CREATE INDEX IF NOT EXISTS idx_uh_conn ON usageHistory(connectionId)",
 				"CREATE INDEX IF NOT EXISTS idx_uh_ts_prov ON usageHistory(timestamp DESC, provider)",
@@ -163,6 +162,42 @@ func coreSchema() []tableDef {
 				// need their own index for the OR to use indexes at all.
 				"CREATE INDEX IF NOT EXISTS idx_uh_apikey ON usageHistory(apiKey)",
 				"CREATE INDEX IF NOT EXISTS idx_uh_clientkey ON usageHistory(clientKey)",
+				// A custom provider node's lifetime token quota is the sum of
+				// prompt+completion over the rows whose provider is that node,
+				// counted from the node's own reset mark. The upstream index on
+				// (provider) alone served the equality but not the mark: the
+				// sum still had to read the token columns off the table, one
+				// row at a time, and the dashboard's node list pays that once
+				// per node on every poll.
+				//
+				// Leading with the mark (id) after the provider lets SQLite
+				// answer the same sum from the index alone: the rows a node
+				// has spent are contiguous in the index, so the sum is a
+				// covering-index range scan. Measured on a 400k-row ledger
+				// with 200 custom nodes, the node list went from 1,505 ms to
+				// 9 ms, and the per-node read the request path does went from
+				// 0.5 ms to 0.1 ms.
+				//
+				// It replaces the single-column (provider) index rather than
+				// sitting beside it: the composite answers the equality
+				// search on its own, and SQLite would otherwise keep the
+				// narrow index as a second candidate it has to maintain on
+				// every insert. Measured over 50,000 inserts, keeping both
+				// cost 71 us/row against 56 us/row for the composite alone.
+				"CREATE INDEX IF NOT EXISTS idx_uh_prov_tok ON usageHistory(provider, id, promptTokens, completionTokens)",
+				// The Usage page's two heaviest reads scan the trailing week of
+				// the ledger: the Overview trend chart reads every row to split
+				// it per model family, and the Details node-health table groups
+				// it per provider and per model. Both read the row's wide
+				// columns, and a usageHistory row carries the token payload in
+				// JSON, so the scan had to fetch every row of the window:
+				// measured at 6.1 s for the chart and 5.8 s + 6.4 s for the two
+				// group reads on a 1.2M-row ledger, against 97 ms for the same
+				// range counted through the index. This index carries every
+				// column those three reads need, so SQLite answers them from
+				// the index alone: 1.0 s, 1.1 s and 1.8 s on that ledger, with
+				// no row of the window read.
+				"CREATE INDEX IF NOT EXISTS idx_uh_analytics ON usageHistory(timestamp, provider, model, status, promptTokens, completionTokens, cost)",
 			},
 		},
 		{
@@ -266,6 +301,42 @@ func coreSchema() []tableDef {
 				"CREATE INDEX IF NOT EXISTS idx_sce_stored ON semanticCacheEntries(storedAt)",
 			},
 		},
+		{
+			name: "files",
+			columns: [][2]string{
+				{"id", "TEXT PRIMARY KEY"},
+				{"filename", "TEXT NOT NULL"},
+				{"bytes", "INTEGER NOT NULL"},
+				{"purpose", "TEXT NOT NULL"},
+				{"created_at", "INTEGER NOT NULL"},
+				{"content", "BLOB NOT NULL"},
+			},
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_files_purpose ON files(purpose)",
+				"CREATE INDEX IF NOT EXISTS idx_files_created ON files(created_at DESC)",
+			},
+		},
+		{
+			name: "batches",
+			columns: [][2]string{
+				{"id", "TEXT PRIMARY KEY"},
+				{"input_file_id", "TEXT NOT NULL"},
+				{"endpoint", "TEXT NOT NULL"},
+				{"completion_window", "TEXT NOT NULL"},
+				{"status", "TEXT NOT NULL"},
+				{"output_file_id", "TEXT"},
+				{"error_file_id", "TEXT"},
+				{"created_at", "INTEGER NOT NULL"},
+				{"completed_at", "INTEGER"},
+				{"cancelled_at", "INTEGER"},
+				{"metadata", "TEXT"},
+			},
+			indexes: []string{
+				"CREATE INDEX IF NOT EXISTS idx_batches_status ON batches(status)",
+				"CREATE INDEX IF NOT EXISTS idx_batches_created ON batches(created_at DESC)",
+				"CREATE INDEX IF NOT EXISTS idx_batches_input_file ON batches(input_file_id)",
+			},
+		},
 	}
 }
 
@@ -326,6 +397,13 @@ var goOnlyColumns = [][3]string{
 	{"providerNodes", "queueTimeoutMs", "INTEGER DEFAULT 0"},
 	{"providerNodes", "quotaResetId", "INTEGER DEFAULT 0"},
 	{"providerNodes", "contractExpiresAt", "TEXT DEFAULT ''"},
+	// Smart select combo: the pattern rules that keep a combo's membership in
+	// step with the models the gateway knows about. A JSON array of rule
+	// objects; "[]" means no rules, which is what every combo written before
+	// the feature holds. It is bookkeeping the resolver never reads — the
+	// models column stays the wire contract — so upstream, which declares
+	// neither the column nor the concept, ignores it.
+	{"combos", "matchRules", "TEXT DEFAULT '[]'"},
 }
 
 // keiRouterTables are Go-only tables for KeiRouter port features.
@@ -468,9 +546,15 @@ func EnsureLedgerTables(db *sql.DB) error {
 // Against a 300k-run ledger neither appeared in a single plan — SQLite reached
 // for the single-column index instead — while the breakdown they were named
 // for was still reading the table once per matching row.
+//
+// idx_uh_provider is the single-column (provider) index, replaced by
+// idx_uh_prov_tok. The composite answers the same equality search and
+// carries the token columns with it, so the narrow one is a candidate SQLite
+// no longer picks and a second index every ledger insert has to maintain.
 var supersededIndexes = []string{
 	"DROP INDEX IF EXISTS idx_ca_ts_prov",
 	"DROP INDEX IF EXISTS idx_ca_ts_model",
+	"DROP INDEX IF EXISTS idx_uh_provider",
 }
 
 // EnsureCoreSchema creates the upstream core tables/indexes when absent,
@@ -506,6 +590,9 @@ func EnsureCoreSchema(db *sql.DB) error {
 		return err
 	}
 	if err := EnsureLedgerTables(db); err != nil {
+		return err
+	}
+	if err := EnsureThoughtSignatureTables(db); err != nil {
 		return err
 	}
 	if err := EnsureAdditiveColumns(db); err != nil {

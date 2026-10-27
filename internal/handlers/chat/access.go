@@ -7,6 +7,7 @@ import (
 	"9router/proxy/internal/middleware"
 	"9router/proxy/internal/models"
 	"9router/proxy/internal/providers"
+	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
@@ -89,7 +90,16 @@ func (h *ChatHandler) effectiveAllowedModels(key *models.APIKey) ([]string, erro
 		log.Error("chat", "allowlist read failed, fail-closed", "error", err, "apiKeyId", key.ID)
 		return nil, &ErrPolicyUnavailable{Message: "Policy service temporarily unavailable"}
 	}
-	return h.withPlanPatterns(key.ID, key.PlanID, patterns), nil
+	merged, err := h.withPlanPatterns(key.ID, key.PlanID, patterns)
+	if err != nil {
+		// The plan half of the policy is unknown, so the union is unknown.
+		// Dropping the plan silently would leave the key's own rows alone,
+		// and a key whose only rows came from its plan would become
+		// unrestricted — the same fail-open the own-rows read above avoids.
+		log.Error("chat", "plan read failed, fail-closed", "error", err, "apiKeyId", key.ID)
+		return nil, &ErrPolicyUnavailable{Message: "Policy service temporarily unavailable"}
+	}
+	return merged, nil
 }
 
 // allowedModelPatterns is the same loader for callers that hold a key id
@@ -110,7 +120,15 @@ func (h *ChatHandler) allowedModelPatterns(keyID string) []string {
 		log.Error("chat", "allowlist read failed, fail-closed", "error", err, "apiKeyId", keyID)
 		return []string{SentinelDenyAll}
 	}
-	return h.withPlanPatterns(keyID, nil, patterns)
+	merged, err := h.withPlanPatterns(keyID, nil, patterns)
+	if err != nil {
+		// Same reason as the own-rows read above: an unknown plan half means
+		// the union is unknown, and a key whose only rows came from its plan
+		// would otherwise be treated as unrestricted.
+		log.Error("chat", "plan read failed, fail-closed", "error", err, "apiKeyId", keyID)
+		return []string{SentinelDenyAll}
+	}
+	return merged
 }
 
 // withPlanPatterns widens a key's allowlist with the patterns its plan grants.
@@ -125,29 +143,56 @@ func (h *ChatHandler) allowedModelPatterns(keyID string) []string {
 // plan is fetched with one joined query. A caller that already holds the key
 // passes its plan id: an empty one — every key minted before F-3 — skips that
 // query entirely, so the common case pays nothing extra.
-func (h *ChatHandler) withPlanPatterns(keyID string, planID *string, own []string) []string {
+//
+// A failed plan read returns an error rather than an empty plan: the union is
+// then unknown, and returning the own rows alone would drop the plan's grant
+// without saying so. A key whose only rows came from its plan would read as
+// unrestricted, which is the fail-open the caller has to be able to refuse.
+//
+// A plan that simply does not exist is not an error: a key can name a plan
+// that was deleted after the key was pointed at it, and such a key grants
+// nothing beyond its own rows.
+func (h *ChatHandler) withPlanPatterns(keyID string, planID *string, own []string) ([]string, error) {
 	if h.Repo == nil {
-		return own
+		return own, nil
 	}
 	var planPatterns []string
 	if planID != nil && strings.TrimSpace(*planID) != "" {
 		plan, err := h.Repo.GetPlan(strings.TrimSpace(*planID))
-		if err == nil {
-			planPatterns = plan.AllowedModels
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				// The plan row is gone, or the database predates the
+				// plans table: the key's own rows are all that is
+				// left, and that is not a failure.
+				return own, nil
+			}
+			if errors.Is(err, db.ErrNoPlansTable) {
+				// A database without the plans table cannot have a
+				// key on a plan.
+				return own, nil
+			}
+			return nil, err
 		}
+		planPatterns = plan.AllowedModels
 	} else if planID == nil {
 		// The caller holds only a key id, so the plan id is unknown: one joined
 		// read answers it. A caller that passed a known-empty plan id is not
 		// here, so a key with no plan skips this query entirely.
 		plans, err := h.Repo.GetPlansForKeys([]string{keyID})
-		if err == nil {
-			planPatterns = plans[keyID].AllowedModels
+		if err != nil {
+			if errors.Is(err, db.ErrNoPlansTable) {
+				// A database created before F-3 has no plans table, and
+				// a key in it cannot be on a plan.
+				return own, nil
+			}
+			return nil, err
 		}
+		planPatterns = plans[keyID].AllowedModels
 	}
 	if len(planPatterns) == 0 {
-		return own
+		return own, nil
 	}
-	return unionModelPatterns(own, planPatterns)
+	return unionModelPatterns(own, planPatterns), nil
 }
 
 // unionModelPatterns merges two allowlists in stable order, dropping
@@ -284,6 +329,16 @@ func (h *ChatHandler) checkModelAccess(key *models.APIKey, modelID string) error
 
 // writeModelAccessError maps a gate error onto the wire: a policy failure is 503,
 // a typed denial is 403, anything else is a 400.
+//
+// The 403 envelope comes from the shared writer (handlerutil.WriteJSONError),
+// so its type and code are permission_error / insufficient_quota — the same
+// pair upstream's ERROR_TYPES[403] produces (open-sse/config/errorConfig.js).
+// The message is upstream's exact client-facing sentence, so it names the
+// model the client asked for and nothing else — never the key name and never
+// the key's allow list.
+//
+// The 503 policy failure keeps its own shape: it is not an upstream status,
+// so it carries a code of its own rather than the status-derived one.
 func writeModelAccessError(w http.ResponseWriter, err error) {
 	if IsPolicyUnavailable(err) {
 		handlerutil.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -295,17 +350,34 @@ func writeModelAccessError(w http.ResponseWriter, err error) {
 		})
 		return
 	}
-	if IsModelNotAllowed(err) {
-		handlerutil.WriteJSON(w, http.StatusForbidden, map[string]any{
-			"error": map[string]string{
-				"message": "Model not allowed for this API key",
-				"type":    "permission_denied",
-				"code":    "model_not_allowed",
-			},
-		})
+	// errors.As and IsModelNotAllowed ask the same question of the same
+	// error type, so this is the same verdict the 403 branch used to get —
+	// but the typed error is unwrapped HERE, and the unwrap result is
+	// checked, so the branch cannot dereference a nil pointer.
+	var denied *ErrModelNotAllowed
+	if errors.As(err, &denied) {
+		handlerutil.WriteJSONError(w, http.StatusForbidden, modelAccessDeniedMessage(denied.Model))
 		return
 	}
 	handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+}
+
+// modelAccessDeniedMessage is the client-facing sentence for a model-access
+// denial. It reproduces upstream decolua/9router's
+// `keyAccessDeniedMessage(requested)` from
+// src/shared/constants/keyAccess.js verbatim:
+//
+//	export function keyAccessDeniedMessage(requested) {
+//	  return `This API key is not allowed to use model "${requested}"`;
+//	}
+//
+// Upstream calls it at src/sse/services/keyAccess.js:115 and sends it through
+// errorResponse(FORBIDDEN, ...) -> buildErrorBody -> ERROR_TYPES[403]
+// (open-sse/config/errorConfig.js) = {type: permission_error, code:
+// insufficient_quota}. The model is interpolated raw, so it is quoted with
+// double quotes and never escaped.
+func modelAccessDeniedMessage(model string) string {
+	return `This API key is not allowed to use model "` + model + `"`
 }
 
 // enforceModelAccess runs the gate for the calling key and writes the response
@@ -392,11 +464,23 @@ func kindEntriesAsModelInfo(data []map[string]any) []ModelInfoObject {
 func kindEntriesFromModelInfo(data []ModelInfoObject, kind string, created int64) []map[string]any {
 	out := make([]map[string]any, 0, len(data))
 	for _, m := range data {
-		endpoint := kindEndpoint(kind)
+		entryKind, endpoint := kind, kindEndpoint(kind)
+		// The web listing is the one kind that publishes two lanes under one
+		// request, so its per-entry kind and endpoint come from the entry
+		// itself (`<alias>/search`, `<alias>/fetch`) rather than from the
+		// requested kind.
+		if kind == "web" {
+			switch {
+			case strings.HasSuffix(m.ID, "/search"):
+				entryKind, endpoint = "webSearch", "/v1/search"
+			case strings.HasSuffix(m.ID, "/fetch"):
+				entryKind, endpoint = "webFetch", "/v1/web/fetch"
+			}
+		}
 		out = append(out, map[string]any{
 			"id":       m.ID,
 			"object":   "model",
-			"kind":     kind,
+			"kind":     entryKind,
 			"owned_by": m.OwnedBy,
 			"endpoint": endpoint,
 			"created":  created,
