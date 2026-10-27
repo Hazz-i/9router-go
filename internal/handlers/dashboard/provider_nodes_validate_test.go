@@ -5,6 +5,7 @@ import (
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -291,5 +292,105 @@ func TestValidateProviderNode_NetworkErrorMapsToFriendlyMessage(t *testing.T) {
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("expected one probe, got %d", len(*calls))
+	}
+}
+
+func TestValidateProviderNode_CustomImageModelsPath(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusOK)
+
+	rec, out := postValidateNode(t, `{"baseUrl":"https://kenari.id/v1","apiKey":"k","type":"custom-image"}`, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !nodeValid(t, out) {
+		t.Fatalf("models 200 should validate, got %s", rec.Body.String())
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly one models probe, got %d", len(*calls))
+	}
+	if (*calls)[0].url != "https://kenari.id/v1/models" {
+		t.Errorf("unexpected probe URL %q", (*calls)[0].url)
+	}
+	if got := (*calls)[0].headers.Get("Authorization"); got != "Bearer k" {
+		t.Errorf("expected Bearer auth, got %q", got)
+	}
+}
+
+func TestValidateProviderNode_CustomImageModels401Stops(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusUnauthorized)
+
+	_, out := postValidateNode(t, `{"baseUrl":"https://kenari.id/v1","apiKey":"bad","type":"custom-image"}`, true)
+	if nodeValid(t, out) {
+		t.Fatalf("401 must be invalid")
+	}
+	if got := nodeOut(t, out, "error"); got != "API key unauthorized" {
+		t.Errorf("unexpected error %q", got)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("401 must not fall back to image generation, got %d probes", len(*calls))
+	}
+}
+
+func TestValidateProviderNode_CustomImageModels404FallsBackToGeneration(t *testing.T) {
+	calls := staticProbeStub(t, http.StatusNotFound, http.StatusOK)
+
+	rec, out := postValidateNode(t, `{"baseUrl":"https://kenari.id/v1","apiKey":"k","type":"custom-image","modelId":"flux-mini"}`, true)
+	if !nodeValid(t, out) {
+		t.Fatalf("image fallback should validate, got %s", rec.Body.String())
+	}
+	if got := nodeOut(t, out, "method"); got != "image" {
+		t.Errorf("expected method=image, got %q", got)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("expected models+generation probes, got %d", len(*calls))
+	}
+	p := (*calls)[1]
+	if p.method != http.MethodPost || p.url != "https://kenari.id/v1/images/generations" {
+		t.Errorf("expected POST /images/generations, got %s %s", p.method, p.url)
+	}
+	for _, want := range []string{`"model":"flux-mini"`, `"prompt":"ping"`, `"n":1`, `"size":"256x256"`} {
+		if !bytes.Contains([]byte(p.body), []byte(want)) {
+			t.Errorf("generation probe body missing %s: %s", want, p.body)
+		}
+	}
+}
+
+func TestValidateProviderNode_CustomImageGeneration400NamingModelIsValid(t *testing.T) {
+	calls := withProbeStub(t, func(call int, p capturedProbe) (int, []byte, error) {
+		if call == 0 {
+			return http.StatusNotFound, nil, nil
+		}
+		return http.StatusBadRequest, []byte(`{"error":{"message":"model flux-mini is not an image model"}}`), nil
+	})
+
+	_, out := postValidateNode(t, `{"baseUrl":"https://kenari.id/v1","apiKey":"k","type":"custom-image","modelId":"flux-mini"}`, true)
+	if !nodeValid(t, out) {
+		t.Fatalf("a 400 naming the model proves the endpoint is reachable, got invalid")
+	}
+	if got := nodeOut(t, out, "method"); got != "image" {
+		t.Errorf("expected method=image, got %q", got)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("fallback must never retry, got %d probes", len(*calls))
+	}
+}
+
+func TestValidateProviderNode_CustomImageGeneration400WithoutModelIsInvalid(t *testing.T) {
+	calls := withProbeStub(t, func(call int, p capturedProbe) (int, []byte, error) {
+		if call == 0 {
+			return http.StatusNotFound, nil, nil
+		}
+		return http.StatusBadRequest, []byte(`{"error":{"message":"bad request"}}`), nil
+	})
+
+	_, out := postValidateNode(t, `{"baseUrl":"https://kenari.id/v1","apiKey":"k","type":"custom-image","modelId":"flux-mini"}`, true)
+	if nodeValid(t, out) {
+		t.Fatalf("a 400 that does not name the model must be invalid")
+	}
+	if !strings.HasPrefix(nodeOut(t, out, "error"), "Image generation request failed (400)") {
+		t.Errorf("unexpected error %q", nodeOut(t, out, "error"))
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("fallback must never retry, got %d probes", len(*calls))
 	}
 }

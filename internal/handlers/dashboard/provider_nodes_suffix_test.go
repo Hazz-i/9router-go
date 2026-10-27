@@ -71,6 +71,12 @@ func TestHandleCreateProviderNode_CustomSuffixReplacesUUID(t *testing.T) {
 			wantSuffix: "voyage",
 		},
 		{
+			name:       "custom image",
+			body:       `{"name":"Kenari","prefix":"kenari","urlSuffix":"kenari","type":"custom-image","baseUrl":"https://kenari.id/v1"}`,
+			wantID:     "custom-image-kenari",
+			wantSuffix: "kenari",
+		},
+		{
 			name:       "dotted and underscored suffixes stay writable",
 			body:       `{"name":"N","prefix":"n","urlSuffix":"prod_v2.1"}`,
 			wantID:     "openai-compatible-chat-prod_v2.1",
@@ -197,6 +203,8 @@ func TestHandleCreateProviderNode_RejectsUnusableSuffix(t *testing.T) {
 		{name: "provider literal", suffix: "openai-compatible", want: "must not start with"},
 		{name: "anthropic literal", suffix: "anthropic-compatible-x", want: "must not start with"},
 		{name: "embedding literal", suffix: "custom-embedding", want: "must not start with"},
+		{name: "image literal", suffix: "custom-image", want: "must not start with"},
+		{name: "image literal with tail", suffix: "custom-image-x", want: "must not start with"},
 	}
 
 	for _, tt := range tests {
@@ -417,6 +425,7 @@ func TestComposeProviderNodeID_KeepsReaderLiterals(t *testing.T) {
 		{nodeType: "openai-compatible", apiType: "responses", suffix: "x", want: "openai-compatible-responses-x"},
 		{nodeType: "anthropic-compatible", suffix: "x", want: "anthropic-compatible-x"},
 		{nodeType: "custom-embedding", suffix: "x", want: "custom-embedding-x"},
+		{nodeType: "custom-image", suffix: "x", want: "custom-image-x"},
 		{nodeType: "", suffix: "x", want: "openai-compatible-chat-x"},
 	}
 	for _, tt := range tests {

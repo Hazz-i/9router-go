@@ -193,15 +193,16 @@ func stripModelPrefix(modelID string, prefixes ...string) string {
 }
 
 // isCompatibleProviderID reports whether a provider id belongs to a custom
-// endpoint the user registered. All three node shapes qualify, including
-// custom-embedding: a custom embedding node published under its own id is
-// served by the same OpenAI-compatible transport, and without it a node whose
-// connection pins enabledModels would fall back to the registry catalog and
-// answer /v1/models with providers the node does not serve.
+// endpoint the user registered. All four node shapes qualify, including
+// custom-embedding and custom-image: a custom node published under its own id
+// is served by the same OpenAI-compatible transport, and without it a node
+// whose connection pins enabledModels would fall back to the registry catalog
+// and answer /v1/models with providers the node does not serve.
 func isCompatibleProviderID(providerID string) bool {
 	return strings.HasPrefix(providerID, "openai-compatible-") ||
 		strings.HasPrefix(providerID, "anthropic-compatible-") ||
-		strings.HasPrefix(providerID, "custom-embedding-")
+		strings.HasPrefix(providerID, "custom-embedding-") ||
+		strings.HasPrefix(providerID, "custom-image-")
 }
 
 // disabledModelIndex collects the `disabledModels` KV scope the dashboard

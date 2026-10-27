@@ -235,8 +235,56 @@ func TestHandleGetConnectionModels_NonCompatibleRejected(t *testing.T) {
 	}
 }
 
-func TestHandleGetConnectionModels_Antigravity(t *testing.T) {
+// TestHandleGetConnectionModels_CustomImageNode pins the catalogue read for a
+// custom media node: the node row carries the base URL and the connection only
+// the key, and "Import from /models" on the media page is this call. Gating the
+// listing on the two chat literals answered "does not support models listing"
+// for every custom node that is not chat.
+func TestHandleGetConnectionModels_CustomImageNode(t *testing.T) {
 	repo, cleanup := setupNodeTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	nodeData := `{"prefix":"kenari","apiType":"chat","baseUrl":"http://upstream.example/v1"}`
+	if _, err := repo.CreateProviderNode("custom-image-kenari", "custom-image", "Kenari", nodeData); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	if _, err := repo.RawDB().Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-ci', 'custom-image-kenari', 'apikey', 'K', 1, 1, '{"apiKey":"sk-x"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	calls := withProbeStub(t, func(_ int, p capturedProbe) (int, []byte, error) {
+		if p.url != "http://upstream.example/v1/models" {
+			t.Errorf("unexpected probe url %q", p.url)
+		}
+		if p.headers.Get("Authorization") != "Bearer sk-x" {
+			t.Errorf("unexpected auth %q", p.headers.Get("Authorization"))
+		}
+		return http.StatusOK, []byte(`{"data":[{"id":"gpt-image-2"}]}`), nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/providers/conn-ci/models", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Models) != 1 || out.Models[0]["id"] != "gpt-image-2" {
+		t.Fatalf("unexpected models: %v", out.Models)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 probe, got %d", len(*calls))
+	}
+}
+
+func TestHandleGetConnectionModels_Antigravity(t *testing.T) {	repo, cleanup := setupNodeTestDB(t)
 	defer cleanup()
 	router := setupTestRouter(repo)
 

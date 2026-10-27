@@ -9,6 +9,30 @@ import (
 	"9router/proxy/internal/db"
 )
 
+// TestIsCompatibleProviderID_CustomImage pins the /v1/models reader: a
+// custom-image node id must be served by the compatible-node listing path
+// (custom models, aliases, disabled-model lists keyed by the node id), not
+// fall through to the registry catalog.
+func TestIsCompatibleProviderID_CustomImage(t *testing.T) {
+	tests := []struct {
+		providerID string
+		want       bool
+	}{
+		{providerID: "custom-image-kenari", want: true},
+		{providerID: "custom-image-voyage-prod", want: true},
+		{providerID: "custom-image", want: false},
+		{providerID: "custom-embedding-voyage", want: true},
+		{providerID: "openai-compatible-chat-bai", want: true},
+		{providerID: "anthropic-compatible-ac", want: true},
+		{providerID: "openai", want: false},
+	}
+	for _, tt := range tests {
+		if got := isCompatibleProviderID(tt.providerID); got != tt.want {
+			t.Errorf("isCompatibleProviderID(%q) = %v, want %v", tt.providerID, got, tt.want)
+		}
+	}
+}
+
 // TestHandleModels_CompatibleNodeDisabledModels pins the claim that the
 // disabledModels gate already covers a custom (compatible) provider node, not
 // just registry providers.

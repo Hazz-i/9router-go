@@ -39,9 +39,10 @@
 
   const COMBO_KINDS = new Set<string>([])
   const COMBO_BASE_NAMES: Record<string, string> = { image: 'image-combo', tts: 'tts-combo' }
+  const CUSTOM_NODE_TYPES: Record<string, string> = { embedding: 'custom-embedding', image: 'custom-image' }
 
   let kindConfig = $derived(MEDIA_KIND_INFO[kind])
-  let isEmbedding = $derived(kind === 'embedding')
+  let customNodeType = $derived(CUSTOM_NODE_TYPES[kind])
   let supportsCombo = $derived(COMBO_KINDS.has(kind))
   let kindCombos = $derived(combos.filter((c) => (c as any).kind === kind))
 
@@ -55,23 +56,22 @@
   })
 
   onMount(() => {
-    if (isEmbedding) {
-      api.getProviderNodes().then((nodes) => {
-        customNodes = (nodes || []).filter((n) => n.type === 'custom-embedding')
-      }).catch(() => {})
-    }
+    if (!customNodeType) return
+    api.getProviderNodes().then((nodes) => {
+      customNodes = (nodes || []).filter((n) => n.type === customNodeType)
+    }).catch(() => {})
   })
 
   let customProviders = $derived(
     customNodes.map((n) => ({
       id: n.id,
-      name: n.name || 'Custom Embedding',
+      name: n.name || (kind === 'embedding' ? 'Custom Embedding' : 'Custom Image Provider'),
       category: 'custom' as const,
       alias: n.prefix || n.id,
-      color: '#6366F1',
-      icon: 'data_array',
-      serviceKinds: ['embedding'],
-      noAuth: true,
+      color: kind === 'embedding' ? '#6366F1' : '#F97316',
+      icon: kind === 'embedding' ? 'data_array' : 'image',
+      serviceKinds: [kind],
+      noAuth: kind === 'embedding',
     } as ProviderCatalogItem))
   )
 
@@ -145,7 +145,7 @@
   />
 {:else}
   <div class="flex flex-col gap-6 animate-fade-in">
-    {#if isEmbedding || supportsCombo}
+    {#if customNodeType || supportsCombo}
       <div class="flex items-center justify-end gap-2">
         {#if supportsCombo}
           <button
@@ -157,14 +157,14 @@
             Create Combo
           </button>
         {/if}
-        {#if isEmbedding}
+        {#if customNodeType}
           <button
             type="button"
             onclick={() => (showCustomModal = true)}
             class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-primary hover:bg-primary-hover text-white text-xs font-semibold transition-colors cursor-pointer shadow-sm"
           >
             <span class="material-symbols-outlined text-sm">add</span>
-            Add Custom Embedding
+            {kind === 'embedding' ? 'Add Custom Embedding' : 'Add Custom Image'}
           </button>
         {/if}
       </div>
@@ -235,11 +235,11 @@
       </div>
     {/if}
 
-    {#if isEmbedding && showCustomModal}
+    {#if customNodeType && showCustomModal}
       <AddCompatibleNodeModal
         isOpen={showCustomModal}
-        type="custom-embedding"
-        allowedTypes={['custom-embedding']}
+        type={customNodeType as 'custom-embedding' | 'custom-image'}
+        allowedTypes={[customNodeType as 'custom-embedding' | 'custom-image']}
         onClose={() => (showCustomModal = false)}
         onSubmit={handleCreateCustomNode}
       />

@@ -274,6 +274,10 @@ func (h *DashboardHandler) HandleUpdateProviderNode(w http.ResponseWriter, r *ht
 		baseURL = strings.TrimSuffix(baseURL, "/")
 		baseURL = strings.TrimSuffix(baseURL, "/embeddings")
 	}
+	if nodeType == "custom-image" {
+		baseURL = strings.TrimSuffix(baseURL, "/")
+		baseURL = strings.TrimSuffix(baseURL, "/images/generations")
+	}
 	apiType := ""
 	if nodeData != nil {
 		apiType = nodeData.APIType
@@ -441,6 +445,8 @@ func (h *DashboardHandler) HandleValidateProviderNode(w http.ResponseWriter, r *
 	switch strings.TrimSpace(req.Type) {
 	case "custom-embedding":
 		validateCustomEmbeddingNode(w, ctx, baseURL, apiKey, strings.TrimSpace(req.ModelID))
+	case "custom-image":
+		validateCustomImageNode(w, ctx, baseURL, apiKey, strings.TrimSpace(req.ModelID))
 	case "anthropic-compatible":
 		validateAnthropicCompatibleNode(w, ctx, baseURL, apiKey, strings.TrimSpace(req.ModelID))
 	default:
@@ -612,6 +618,81 @@ func validateCustomEmbeddingNode(w http.ResponseWriter, ctx context.Context, bas
 		msg += ": " + errText
 	}
 	writeNodeValidation(w, map[string]any{"valid": false, "error": msg, "method": "embeddings"})
+}
+
+// validateCustomImageNode probes GET {base}/models first — one cheap request
+// that proves both the auth and the catalog — and falls back to at most one
+// minimal image generation when the node does not expose /models. The
+// fallback never retries and never spends more than one generation: a 2xx or
+// a 400 whose body names the probed model both prove the image endpoint is
+// reachable.
+func validateCustomImageNode(w http.ResponseWriter, ctx context.Context, baseURL, apiKey, modelID string) {
+	base := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
+	headers := map[string]string{"Authorization": "Bearer " + apiKey}
+
+	status, body, err := validateProbeDo(ctx, http.MethodGet, base+"/models", headers, nil)
+	if err != nil {
+		writeNodeValidation(w, map[string]any{"valid": false, "error": validateNodeNetworkMessage(err)})
+		return
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		writeNodeValidation(w, map[string]any{"valid": false, "error": "API key unauthorized"})
+		return
+	}
+	if status == http.StatusOK {
+		writeNodeValidation(w, map[string]any{"valid": true})
+		return
+	}
+	if status != http.StatusNotFound && status != http.StatusMethodNotAllowed {
+		writeNodeValidation(w, map[string]any{"valid": false, "error": validateNodeModelsStatusMessage(status)})
+		return
+	}
+
+	effectiveModel := modelID
+	if effectiveModel == "" && len(body) > 0 {
+		var modelsRes struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(body, &modelsRes) == nil && len(modelsRes.Data) > 0 && modelsRes.Data[0].ID != "" {
+			effectiveModel = modelsRes.Data[0].ID
+		}
+	}
+	if effectiveModel == "" {
+		writeNodeValidation(w, map[string]any{"valid": false, "error": validateNodeModelsStatusMessage(status)})
+		return
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"model":  effectiveModel,
+		"prompt": "ping",
+		"n":      1,
+		"size":   "256x256",
+	})
+	genHeaders := map[string]string{
+		"Authorization": "Bearer " + apiKey,
+		"Content-Type":  "application/json",
+	}
+	genStatus, resBody, gErr := validateProbeDo(ctx, http.MethodPost, base+"/images/generations", genHeaders, payload)
+	if gErr != nil {
+		writeNodeValidation(w, map[string]any{"valid": false, "error": validateNodeNetworkMessage(gErr)})
+		return
+	}
+	if genStatus == http.StatusUnauthorized || genStatus == http.StatusForbidden {
+		writeNodeValidation(w, map[string]any{"valid": false, "error": "API key unauthorized"})
+		return
+	}
+	if (genStatus >= 200 && genStatus < 300) ||
+		(genStatus == http.StatusBadRequest && strings.Contains(string(resBody), effectiveModel)) {
+		writeNodeValidation(w, map[string]any{"valid": true, "method": "image"})
+		return
+	}
+	msg := fmt.Sprintf("Image generation request failed (%d)", genStatus)
+	if errText := strings.TrimSpace(string(resBody)); errText != "" {
+		msg += ": " + errText
+	}
+	writeNodeValidation(w, map[string]any{"valid": false, "error": msg, "method": "image"})
 }
 
 // embeddingDimension extracts the vector length of the first embedding from a

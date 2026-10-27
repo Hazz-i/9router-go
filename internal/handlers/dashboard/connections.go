@@ -1159,8 +1159,15 @@ func (h *DashboardHandler) writeConnectionModels(w http.ResponseWriter, r *http.
 	isOpenAI := strings.HasPrefix(conn.Provider, "openai-compatible-")
 	isAnthropic := strings.HasPrefix(conn.Provider, "anthropic-compatible-")
 	if !isOpenAI && !isAnthropic {
-		handlerutil.WriteJSONError(w, http.StatusBadRequest, "provider "+conn.Provider+" does not support models listing")
-		return
+		// A custom node of any kind (custom-embedding, custom-image, ...) is
+		// served by the same OpenAI-compatible transport and lists its
+		// catalogue the same way, with the base URL on the node row. Gating on
+		// the two chat literals is what made "Import from /models" answer
+		// "does not support models listing" on a custom media provider.
+		if node, _, nerr := h.Repo.GetProviderNodeByID(conn.Provider); nerr != nil || node == nil {
+			handlerutil.WriteJSONError(w, http.StatusBadRequest, "provider "+conn.Provider+" does not support models listing")
+			return
+		}
 	}
 	baseURL := ""
 	if connData.ProviderSpecificData != nil {

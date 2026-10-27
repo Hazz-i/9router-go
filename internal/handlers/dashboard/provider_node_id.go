@@ -41,7 +41,7 @@ const maxProviderNodeIDLength = 96
 // (strings.HasPrefix in resolution, live_catalog, connection probes, icon
 // lookup). A suffix may not begin with one of them: "openai-compatible-chat-x"
 // must not be mistaken for a node id the operator named "chat-x".
-var nodeIDPrefixes = []string{"openai-compatible", "anthropic-compatible", "custom-embedding"}
+var nodeIDPrefixes = []string{"openai-compatible", "anthropic-compatible", "custom-embedding", "custom-image"}
 
 // composeProviderNodeID builds the storage id for a node of nodeType/apiType
 // with the given custom suffix. An empty suffix falls back to the random id
@@ -87,9 +87,9 @@ func providerNodeSuffixOf(id string) (suffix string, generated bool) {
 func providerNodeLiteralsForID(id string) []string {
 	if apiType, _, ok := strings.Cut(strings.TrimPrefix(id, "openai-compatible-"), "-"); ok &&
 		(apiType == "chat" || apiType == "responses") {
-		return []string{"openai-compatible-" + apiType, "anthropic-compatible", "custom-embedding", "openai-compatible"}
+		return []string{"openai-compatible-" + apiType, "anthropic-compatible", "custom-embedding", "custom-image", "openai-compatible"}
 	}
-	return []string{"anthropic-compatible", "custom-embedding", "openai-compatible"}
+	return []string{"anthropic-compatible", "custom-embedding", "custom-image", "openai-compatible"}
 }
 
 // currentSuffixOf reports the suffix a node id already carries, or an empty
@@ -121,6 +121,8 @@ func providerNodeLiterals(nodeType, apiType string) (literal, defaultBaseURL str
 		return "anthropic-compatible", "https://api.anthropic.com/v1"
 	case "custom-embedding":
 		return "custom-embedding", "https://api.openai.com/v1"
+	case "custom-image":
+		return "custom-image", "https://api.openai.com/v1"
 	default:
 		if apiType != "chat" && apiType != "responses" {
 			apiType = "chat"
