@@ -79,6 +79,7 @@ export const PROVIDER_ID_TO_ALIAS: Record<string, string> = {
   "iflow": "if",
   "inworld": "inworld",
   "jina-ai": "jina-ai",
+  "kenari": "kenari",
   "kilo-gateway": "kgw",
   "kilocode": "kc",
   "kimchi": "kimchi",
@@ -2017,6 +2018,38 @@ export const BUILTIN_MODELS_BY_PROVIDER: Record<string, ProviderModel[]> = {
         "n",
         "size"
       ],
+      "kind": "image"
+    }
+  ],
+  "kenari": [
+    {
+      "id": "agnes-image-2-0-flash:free",
+      "name": "Agnes Image 2.0 Flash (free)",
+      "kind": "image"
+    },
+    {
+      "id": "agnes-image-2-1-flash:free",
+      "name": "Agnes Image 2.1 Flash (free)",
+      "kind": "image"
+    },
+    {
+      "id": "agnes-image-2-5-flash:free",
+      "name": "Agnes Image 2.5 Flash (free)",
+      "kind": "image"
+    },
+    {
+      "id": "gpt-image-2",
+      "name": "GPT Image 2",
+      "kind": "image"
+    },
+    {
+      "id": "gpt-image-2-5-flare",
+      "name": "GPT Image 2.5 Flare",
+      "kind": "image"
+    },
+    {
+      "id": "gpt-image-2-5-sunburst",
+      "name": "GPT Image 2.5 Sunburst",
       "kind": "image"
     }
   ],

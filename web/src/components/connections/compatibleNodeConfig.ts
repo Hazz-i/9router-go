@@ -1,4 +1,4 @@
-export type CompatibleNodeType = 'openai-compatible' | 'anthropic-compatible' | 'custom-embedding' | 'custom-image'
+export type CompatibleNodeType = 'openai-compatible' | 'anthropic-compatible' | 'custom-embedding'
 
 export const VARIANT_CONFIG: Record<CompatibleNodeType, {
   label: string
@@ -54,20 +54,6 @@ export const VARIANT_CONFIG: Record<CompatibleNodeType, {
     nameHint: 'Required. A friendly label for this embedding provider.',
     prefixHint: 'Required. Used as the provider prefix for model IDs (e.g. voyage/voyage-3).',
     modelIdHint: 'Required for validation. Will send a test embeddings request.',
-    hasApiType: false,
-  },
-  'custom-image': {
-    label: 'Custom Image',
-    summary: 'OpenAI-compatible image generation endpoints',
-    title: 'Add Custom Image Provider',
-    defaultBaseUrl: 'https://kenari.id/v1',
-    namePlaceholder: 'Kenari',
-    prefixPlaceholder: 'kenari',
-    baseUrlHint: 'OpenAI-compatible image API base URL; /v1 is allowed (for example, https://kenari.id/v1).',
-    modelIdPlaceholder: 'e.g. gpt-image-2',
-    nameHint: 'Required. A friendly label for this image provider.',
-    prefixHint: 'Required. Provider prefix used in model IDs, e.g. kenari in kenari/gpt-image-2.',
-    modelIdHint: 'Optional. Used to check a model when the provider does not list models.',
     hasApiType: false,
   },
 }

@@ -270,6 +270,26 @@ func TestIsLLMModelID(t *testing.T) {
 	}
 }
 
+// kenari's catalogue is image-only: each id must leave the LLM list through
+// its declared registry kind (upstream modelKind()), like bfl's flux-* ids.
+func TestModelsList_KenariImageKindExcludedFromLLM(t *testing.T) {
+	ids := []string{
+		"agnes-image-2-0-flash:free",
+		"agnes-image-2-1-flash:free",
+		"agnes-image-2-5-flash:free",
+		"gpt-image-2",
+		"gpt-image-2-5-flare",
+		"gpt-image-2-5-sunburst",
+	}
+	for _, id := range ids {
+		t.Run(id, func(t *testing.T) {
+			if isLLMModelEntry("kenari", "kenari", "kenari", id, false) {
+				t.Errorf("kenari/%s classified as LLM, want image (excluded from /v1/models)", id)
+			}
+		})
+	}
+}
+
 // Upstream: providerSpecificData.enabledModels replaces the static catalog.
 func TestHandleModels_EnabledModelsOverrideCatalog(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)

@@ -1154,6 +1154,14 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthScheme: "bearer",
 		NoAuth:     true,
 	},
+	// Kenari (kenari.id): OpenAI-compatible image aggregator — one bearer key,
+	// per-token billing. Image generation goes through the generic media
+	// forward path (<base>/v1/images/generations), so no executor.
+	"kenari": {
+		BaseURL:    "https://kenari.id/v1",
+		AuthHeader: "Authorization",
+		AuthScheme: "bearer",
+	},
 
 	"sdwebui": {
 		BaseURL:  "http://localhost:7860/sdapi/v1/txt2img",

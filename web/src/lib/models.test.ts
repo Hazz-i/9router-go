@@ -76,6 +76,29 @@ describe('commandcode catalog', () => {
   })
 })
 
+describe('Kenari image catalog', () => {
+  it('keeps the six built-in image models in provider order', () => {
+    const models = getModelsByProviderId('kenari')
+    expect(models.map((model) => model.id)).toEqual([
+      'agnes-image-2-0-flash:free',
+      'agnes-image-2-1-flash:free',
+      'agnes-image-2-5-flash:free',
+      'gpt-image-2',
+      'gpt-image-2-5-flare',
+      'gpt-image-2-5-sunburst',
+    ])
+    expect(models.map((model) => model.name)).toEqual([
+      'Agnes Image 2.0 Flash (free)',
+      'Agnes Image 2.1 Flash (free)',
+      'Agnes Image 2.5 Flash (free)',
+      'GPT Image 2',
+      'GPT Image 2.5 Flare',
+      'GPT Image 2.5 Sunburst',
+    ])
+    expect(models.every((model) => model.kind === 'image')).toBe(true)
+  })
+})
+
 // The 22 rows above are a snapshot of upstream's registry file, not of what
 // Command Code serves. Its Provider API publishes the whole catalogue on
 // /provider/v1/models — the free tiers (reflection/beam:free,

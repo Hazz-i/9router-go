@@ -1,0 +1,9 @@
+### feat(image): Kenari provider; custom-image entry points removed from the media page
+
+- **Kenari** (`https://kenari.id`) is now a first-class image provider: `KnownProviders` carries `BaseURL https://kenari.id/v1` with bearer auth, `ProviderModels["kenari"]` holds its six image ids and `ProviderModelKinds` marks every one `image`, so `/v1/models` keeps them out of the LLM list and the media forward path builds `https://kenari.id/v1/images/generations`. No executor: it is an OpenAI-compatible aggregator and rides the generic path.
+  - Catalogue: `agnes-image-2-0-flash:free`, `agnes-image-2-1-flash:free`, `agnes-image-2-5-flash:free`, `gpt-image-2`, `gpt-image-2-5-flare`, `gpt-image-2-5-sunburst`.
+  - The dashboard catalog and `BUILTIN_MODELS_BY_PROVIDER` mirror the same list with readable names, so Text-to-Image lists Kenari with its models instead of an empty card.
+- The media page's custom-provider entry points are gone: no **Add Custom Image** button, no per-provider model toolbar (Add / Import from /models), no `custom-image` variant in the compatible-node dialog, and `customMediaModels.ts` is deleted. The Embedding page keeps **Add Custom Embedding** unchanged.
+  - The `custom-image` provider-node type stays supported by the API (`POST /api/provider-nodes` + its validate probe); only the dashboard stopped offering it, so an operator can still register one by hand.
+  - The `apiKey` field fix in the media page's Add Connection stays: the API reads `apiKey`, and posting `key` silently stored no credential.
+- Verified: `go build ./...`, `go vet`, `go test ./internal/providers/ ./internal/handlers/chat/ ./internal/handlers/media/`, `bun test src scripts` (659 pass), `bun run build`, svelte-check ratchet (0 unresolved, 77 = baseline), `bunx oxlint --deny-warnings`, plus a live check of the served bundle: Kenari and all six model ids present, `Add Custom Image` / `custom-image` absent, `Add Custom Embedding` still present.

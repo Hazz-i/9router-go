@@ -39,7 +39,7 @@
 
   const COMBO_KINDS = new Set<string>([])
   const COMBO_BASE_NAMES: Record<string, string> = { image: 'image-combo', tts: 'tts-combo' }
-  const CUSTOM_NODE_TYPES: Record<string, string> = { embedding: 'custom-embedding', image: 'custom-image' }
+  const CUSTOM_NODE_TYPES: Record<string, string> = { embedding: 'custom-embedding' }
 
   let kindConfig = $derived(MEDIA_KIND_INFO[kind])
   let customNodeType = $derived(CUSTOM_NODE_TYPES[kind])
@@ -65,13 +65,13 @@
   let customProviders = $derived(
     customNodes.map((n) => ({
       id: n.id,
-      name: n.name || (kind === 'embedding' ? 'Custom Embedding' : 'Custom Image Provider'),
+      name: n.name || 'Custom Embedding',
       category: 'custom' as const,
       alias: n.prefix || n.id,
-      color: kind === 'embedding' ? '#6366F1' : '#F97316',
-      icon: kind === 'embedding' ? 'data_array' : 'image',
+      color: '#6366F1',
+      icon: 'data_array',
       serviceKinds: [kind],
-      noAuth: kind === 'embedding',
+      noAuth: true,
     } as ProviderCatalogItem))
   )
 
@@ -164,7 +164,7 @@
             class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-primary hover:bg-primary-hover text-white text-xs font-semibold transition-colors cursor-pointer shadow-sm"
           >
             <span class="material-symbols-outlined text-sm">add</span>
-            {kind === 'embedding' ? 'Add Custom Embedding' : 'Add Custom Image'}
+            Add Custom Embedding
           </button>
         {/if}
       </div>
@@ -238,8 +238,8 @@
     {#if customNodeType && showCustomModal}
       <AddCompatibleNodeModal
         isOpen={showCustomModal}
-        type={customNodeType as 'custom-embedding' | 'custom-image'}
-        allowedTypes={[customNodeType as 'custom-embedding' | 'custom-image']}
+        type={customNodeType as 'custom-embedding'}
+        allowedTypes={[customNodeType as 'custom-embedding']}
         onClose={() => (showCustomModal = false)}
         onSubmit={handleCreateCustomNode}
       />

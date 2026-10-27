@@ -50,6 +50,7 @@ describe('providers & media separation', () => {
     const imageProviders = getProvidersByKind('image')
     assert.ok(imageProviders.some((p) => p.id === 'black-forest-labs'))
     assert.ok(imageProviders.some((p) => p.id === 'fal-ai'))
+    assert.ok(imageProviders.some((p) => p.id === 'kenari'))
     assert.ok(imageProviders.some((p) => p.id === 'runwayml'))
 
     const videoProviders = getProvidersByKind('video')
@@ -141,6 +142,17 @@ describe('providers & media separation', () => {
       assert.strictEqual(p.category, 'apikey')
       assert.strictEqual(p.noAuth, undefined)
     }
+  })
+
+  it('registers Kenari as an API-key image provider', () => {
+    const kenari = PROVIDER_CATALOG.find((p) => p.id === 'kenari')
+    assert.ok(kenari)
+    assert.strictEqual(kenari.name, 'Kenari')
+    assert.strictEqual(kenari.category, 'apikey')
+    assert.strictEqual(kenari.alias, 'kenari')
+    assert.strictEqual(kenari.authType, 'apikey')
+    assert.strictEqual(kenari.noAuth, false)
+    assert.deepStrictEqual(kenari.serviceKinds, ['image'])
   })
 
   it('marks devin-cli as free noAuth (upstream parity)', () => {

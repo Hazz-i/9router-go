@@ -4,12 +4,11 @@
   import { emailPrivacy, formatEmailLabel } from '../../lib/privacy'
   import { copyToClipboard } from '../../lib/clipboard'
   import { getModelKind, getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from '../../lib/models'
-  import { importCustomModelsBestEffort, notifyCustomModelsChanged, parseCustomModelsResponse, subscribeCustomModelsChanged } from '../../lib/customModels'
+  import { parseCustomModelsResponse, subscribeCustomModelsChanged } from '../../lib/customModels'
   import type { ProviderCatalogItem } from '../../lib/providers'
   import Badge from '../../lib/ui/Badge.svelte'
   import ProviderArtwork from '../providers/ProviderArtwork.svelte'
   import { type MediaKind, MEDIA_KIND_INFO } from './mediaTypes'
-  import { buildCustomMediaModelWrites, getCustomMediaModelIds, parseCustomMediaModelIds } from './customMediaModels'
   import NoAuthProxyCard from './NoAuthProxyCard.svelte'
   import TtsExampleCard from './TtsExampleCard.svelte'
   import SttExampleCard from './SttExampleCard.svelte'
@@ -231,12 +230,6 @@
   // kind + custom models for this provider+kind (providerAlias match, builtin dedupe).
   let customKindModels = $state<Array<{ id: string; name?: string }>>([])
   let rawModels = $derived(getModelsByProviderId(provider.id))
-  const CUSTOM_MEDIA_MODEL_TYPES: Partial<Record<MediaKind, string>> = { image: 'image' }
-  let customModelType = $derived(CUSTOM_MEDIA_MODEL_TYPES[kind])
-  let canManageCustomModels = $derived(provider.id.startsWith('custom-') && !!customModelType)
-  let customModelInput = $state('')
-  let isSavingCustomModels = $state(false)
-  let activeCustomConnection = $derived(providerConns.find((conn) => conn.isActive === 1))
   let mediaModels = $derived.by(() => {
     const modelKind = kind === 'liveCaption' ? 'stt' : kind
     const builtin = rawModels.filter((m) => getModelKind(m) === modelKind)
@@ -268,50 +261,6 @@
     return unsub
   })
 
-  function reportCustomModelOutcome(imported: number, attempted: number, refused: Array<{ id: string; reason: string }>) {
-    alert(`Added ${imported} of ${attempted}.${refused.length ? `\n\nNot added:\n${refused.map((item) => `${item.id} — ${item.reason}`).join('\n')}` : ''}`)
-  }
-
-  async function saveCustomMediaModels(ids: string[]) {
-    const storageAlias = provider.alias || provider.id
-    const existing = new Set(mediaModels.map((model) => model.id))
-    const writes = buildCustomMediaModelWrites(ids.filter((id) => !existing.has(id)), storageAlias, customModelType || 'image')
-    isSavingCustomModels = true
-    try {
-      const outcome = await importCustomModelsBestEffort(writes, api.saveCustomModel)
-      await loadCustom()
-      if (outcome.imported > 0) notifyCustomModelsChanged()
-      reportCustomModelOutcome(outcome.imported, writes.length, outcome.refused)
-      customModelInput = ''
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to add models')
-    } finally {
-      isSavingCustomModels = false
-    }
-  }
-
-  async function handleAddCustomModels() {
-    const ids = parseCustomMediaModelIds(customModelInput)
-    if (ids.length > 0) await saveCustomMediaModels(ids)
-  }
-
-  async function handleImportCustomModels() {
-    if (!activeCustomConnection) return
-    isSavingCustomModels = true
-    try {
-      const response = await api.getConnectionModels(activeCustomConnection.id)
-      const ids = getCustomMediaModelIds(response.models)
-      if (ids.length === 0) {
-        alert('No models returned from /models.')
-        return
-      }
-      await saveCustomMediaModels(ids)
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to import models')
-    } finally {
-      isSavingCustomModels = false
-    }
-  }
   let selectedVoice = $state('alloy')
   let ttsResponseFormat = $state('json')
   let sttResponseFormat = $state('json')
@@ -883,36 +832,6 @@
     <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
       <div class="flex flex-col gap-3 mb-4 sm:flex-row sm:items-center sm:justify-between">
         <h2 class="text-lg font-semibold text-text-main">Models — {kind.toUpperCase()}</h2>
-        {#if canManageCustomModels}
-          <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <textarea
-              aria-label="Custom model ids"
-              bind:value={customModelInput}
-              rows="1"
-              placeholder="Model IDs, separated by commas, semicolons, or new lines"
-              class="h-8 min-h-8 min-w-0 flex-1 resize-y rounded-lg border border-border bg-background px-2 py-1.5 text-xs text-text-main placeholder:text-text-subtle focus:border-primary focus:outline-none sm:w-72"
-            ></textarea>
-            <button
-              type="button"
-              onclick={handleAddCustomModels}
-              disabled={isSavingCustomModels || parseCustomMediaModelIds(customModelInput).length === 0}
-              class="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg bg-primary px-3 text-xs font-medium text-white transition-colors hover:bg-primary/90 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <span class="material-symbols-outlined text-[16px]">add</span>
-              Add
-            </button>
-            <button
-              type="button"
-              onclick={handleImportCustomModels}
-              disabled={isSavingCustomModels || !activeCustomConnection}
-              title={!activeCustomConnection ? 'Add an active connection with an API key first' : 'Import models from /models'}
-              class="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-lg border border-border-subtle bg-surface px-3 text-xs font-medium text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <span class="material-symbols-outlined text-[16px]">download</span>
-              Import from /models
-            </button>
-          </div>
-        {/if}
       </div>
       {#if mediaModels.length === 0}
         <p class="text-xs text-text-muted italic">No models registered for this kind.</p>

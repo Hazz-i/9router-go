@@ -67,9 +67,7 @@
       ? 'anthropic-compatible'
       : selectedType === 'custom-embedding'
         ? 'custom-embedding'
-        : selectedType === 'custom-image'
-          ? 'custom-image'
-          : `openai-compatible-${formApiType}`
+        : `openai-compatible-${formApiType}`
   )
   let composedID = $derived(formUrlSuffix.trim() ? `${idLiteral}-${formUrlSuffix.trim()}` : '')
 
@@ -227,9 +225,6 @@
       type="password"
       bind:value={checkKey}
     />
-    {#if selectedType === 'custom-image'}
-      <p class="-mt-3 text-xs text-text-muted">The key here is only for Check; add the API key on this provider’s connection after it is created.</p>
-    {/if}
 
     <Input
       label="Model ID (for Check)"

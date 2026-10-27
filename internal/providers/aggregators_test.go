@@ -60,6 +60,12 @@ func TestAggregatorProviders(t *testing.T) {
 			modelsList: "https://api.meta.ai/v1/models", wantFetcher: true,
 		},
 		{
+			// Kenari (kenari.id): OpenAI-compatible image aggregator. Image-only
+			// catalogue; served by the generic media forward path, no executor.
+			id: "kenari", baseURL: "https://kenari.id/v1",
+			models: []string{"agnes-image-2-0-flash:free", "agnes-image-2-1-flash:free", "agnes-image-2-5-flash:free", "gpt-image-2", "gpt-image-2-5-flare", "gpt-image-2-5-sunburst"},
+		},
+		{
 			// v1m answers System One only: no chat base URL, one endpoint.
 			id: "v1m", baseURL: "",
 			models:  []string{"rev-latest", "v1m-decision-engine"},
@@ -147,4 +153,49 @@ func slicesContains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// kenariImageModels is the image-only catalogue kenari ships; every id must be
+// kinded "image" so the ids stay out of the LLM list and reach the media lane.
+var kenariImageModels = []string{
+	"agnes-image-2-0-flash:free",
+	"agnes-image-2-1-flash:free",
+	"agnes-image-2-5-flash:free",
+	"gpt-image-2",
+	"gpt-image-2-5-flare",
+	"gpt-image-2-5-sunburst",
+}
+
+// TestKenari_ImageKinds pins kenari's kinds table: every catalogue id is an
+// image model and nothing else, mirroring bfl's flux-* entries.
+func TestKenari_ImageKinds(t *testing.T) {
+	kinds, ok := ProviderModelKinds["kenari"]
+	if !ok {
+		t.Fatal("ProviderModelKinds has no entry for kenari")
+	}
+	tests := make([]struct {
+		modelID string
+		want    string
+	}, 0, len(kenariImageModels))
+	for _, m := range kenariImageModels {
+		tests = append(tests, struct {
+			modelID string
+			want    string
+		}{m, "image"})
+	}
+	for _, tt := range tests {
+		t.Run(tt.modelID, func(t *testing.T) {
+			if got := GetProviderModelKind("kenari", tt.modelID); got != tt.want {
+				t.Errorf("GetProviderModelKind(kenari, %q) = %q, want %q", tt.modelID, got, tt.want)
+			}
+		})
+	}
+	if len(kinds) != len(kenariImageModels) {
+		t.Errorf("kinds table has %d entries, want %d", len(kinds), len(kenariImageModels))
+	}
+	for modelID, kind := range kinds {
+		if kind != "image" {
+			t.Errorf("kenari model %q kinded %q, want image", modelID, kind)
+		}
+	}
 }

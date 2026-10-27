@@ -135,6 +135,7 @@ var ProviderModels = map[string][]string{
 	"if":                  {"qwen3-coder-plus", "qwen3-max", "qwen3-vl-plus", "qwen3-max-preview", "qwen3-235b", "qwen3-235b-a22b-instruct", "qwen3-235b-a22b-thinking-2507", "qwen3-32b", "kimi-k2", "deepseek-v3.2", "deepseek-v3.1", "deepseek-v3", "deepseek-r1", "glm-4.7", "iflow-rome-30ba3b"},
 	"iflow":               {"qwen3-coder-plus", "qwen3-max", "qwen3-vl-plus", "qwen3-max-preview", "qwen3-235b", "qwen3-235b-a22b-instruct", "qwen3-235b-a22b-thinking-2507", "qwen3-32b", "kimi-k2", "deepseek-v3.2", "deepseek-v3.1", "deepseek-v3", "deepseek-r1", "glm-4.7", "iflow-rome-30ba3b"},
 	"kc":                  {"anthropic/claude-sonnet-4-20250514", "anthropic/claude-opus-4-20250514", "google/gemini-2.5-pro", "google/gemini-2.5-flash", "openai/gpt-4.1", "openai/o3", "deepseek/deepseek-chat", "deepseek/deepseek-reasoner"},
+	"kenari":              {"agnes-image-2-0-flash:free", "agnes-image-2-1-flash:free", "agnes-image-2-5-flash:free", "gpt-image-2", "gpt-image-2-5-flare", "gpt-image-2-5-sunburst"},
 	"kgw":                 {"kilo-auto/free", "nvidia/nemotron-3-super-120b-a12b:free", "nvidia/nemotron-3-ultra-550b-a55b:free", "kwaipilot/kat-coder-pro-v2.5:free", "kilo-auto/frontier", "kilo-auto/balanced"},
 	"kilo-gateway":        {"kilo-auto/free", "nvidia/nemotron-3-super-120b-a12b:free", "nvidia/nemotron-3-ultra-550b-a55b:free", "kwaipilot/kat-coder-pro-v2.5:free", "kilo-auto/frontier", "kilo-auto/balanced"},
 	"kilocode":            {"anthropic/claude-sonnet-4-20250514", "anthropic/claude-opus-4-20250514", "google/gemini-2.5-pro", "google/gemini-2.5-flash", "openai/gpt-4.1", "openai/o3", "deepseek/deepseek-chat", "deepseek/deepseek-reasoner"},
@@ -304,6 +305,14 @@ var ProviderModelKinds = map[string]map[string]string{
 		"nano-banana": "image",
 		"veo":         "video",
 		"seedance":    "video",
+	},
+	"kenari": {
+		"agnes-image-2-0-flash:free": "image",
+		"agnes-image-2-1-flash:free": "image",
+		"agnes-image-2-5-flash:free": "image",
+		"gpt-image-2":                "image",
+		"gpt-image-2-5-flare":        "image",
+		"gpt-image-2-5-sunburst":     "image",
 	},
 	"uc-web": {
 		"seedream-v4.5":                "image",

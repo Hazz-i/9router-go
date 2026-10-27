@@ -1572,6 +1572,21 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     ]
   },
   {
+    "id": "kenari",
+    "name": "Kenari",
+    "category": "apikey",
+    "alias": "kenari",
+    "color": "#0F766E",
+    "icon": "image",
+    "website": "https://kenari.id",
+    "notice": {"text":"Kenari API key required for image generation."},
+    "authType": "apikey",
+    "noAuth": false,
+    "serviceKinds": [
+      "image"
+    ]
+  },
+  {
     "id": "featherless",
     "name": "Featherless",
     "category": "apikey",
