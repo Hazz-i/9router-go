@@ -143,33 +143,35 @@
 
 <Modal {isOpen} title={config.title} {onClose}>
   <div class="flex flex-col gap-4">
-    <fieldset class="flex flex-col gap-2">
-      <legend class="text-sm font-medium text-text-main">Provider Type</legend>
-      <div class="grid grid-cols-1 gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Provider Type">
-        {#each typeOptions as option (option.value)}
-          <button
-            type="button"
-            role="radio"
-            aria-checked={selectedType === option.value}
-            onclick={() => selectType(option.value)}
-            class="flex flex-col items-start gap-0.5 rounded-[10px] border px-3 py-2 text-left transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 {selectedType === option.value
-              ? 'border-brand-500 bg-brand-500/10'
-              : 'border-border bg-surface-2 hover:border-brand-500/40'}"
-          >
-            <span class="flex w-full items-center justify-between gap-2">
-              <span class="text-sm font-medium text-text-main">{option.label}</span>
-              {#if selectedType === option.value}
-                <span class="material-symbols-outlined text-[16px] text-brand-500" aria-hidden="true">check</span>
-              {/if}
-            </span>
-            <span class="text-xs text-text-muted">{option.summary}</span>
-          </button>
-        {/each}
-      </div>
-      <p class="text-xs text-text-muted">
-        Already entered your endpoint? Switch type here — your name, prefix and base URL stay put.
-      </p>
-    </fieldset>
+    {#if typeOptions.length > 1}
+      <fieldset class="flex flex-col gap-2">
+        <legend class="text-sm font-medium text-text-main">Provider Type</legend>
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Provider Type">
+          {#each typeOptions as option (option.value)}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={selectedType === option.value}
+              onclick={() => selectType(option.value)}
+              class="flex flex-col items-start gap-0.5 rounded-[10px] border px-3 py-2 text-left transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/50 {selectedType === option.value
+                ? 'border-brand-500 bg-brand-500/10'
+                : 'border-border bg-surface-2 hover:border-brand-500/40'}"
+            >
+              <span class="flex w-full items-center justify-between gap-2">
+                <span class="text-sm font-medium text-text-main">{option.label}</span>
+                {#if selectedType === option.value}
+                  <span class="material-symbols-outlined text-[16px] text-brand-500" aria-hidden="true">check</span>
+                {/if}
+              </span>
+              <span class="text-xs text-text-muted">{option.summary}</span>
+            </button>
+          {/each}
+        </div>
+        <p class="text-xs text-text-muted">
+          Already entered your endpoint? Switch type here — your name, prefix and base URL stay put.
+        </p>
+      </fieldset>
+    {/if}
 
     <Input
       label="Name"
