@@ -53,7 +53,11 @@ type Handler struct {
 	// lane's proxy chain). nil keeps dial as the default dialer, used when the
 	// connection has no proxy to honor (and by tests).
 	dialFor func(*shared.ConnectionData) (*websocket.Dialer, error)
-	http    *http.Client
+	// clientFor resolves the same chain for the HTTP transport, so the
+	// self-hosted backend's transcription POST leaves through the assigned
+	// proxy instead of the gateway's own address. nil keeps http.
+	clientFor func(*shared.ConnectionData) (*http.Client, error)
+	http      *http.Client
 
 	// wg counts live sessions. waitSessions drains it so test teardown (and
 	// any future shutdown path) never closes the repo under a session.
@@ -89,6 +93,7 @@ func NewHandler(repo *db.Repo, chatH *chat.ChatHandler) *Handler {
 	}
 	if chatH != nil {
 		h.dialFor = chatH.WebSocketDialerForConnection
+		h.clientFor = chatH.GetClientForConnection
 	}
 	return h
 }

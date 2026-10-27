@@ -5,7 +5,9 @@ package caption
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -117,6 +119,88 @@ func TestResolveConnectionProxyDialer(t *testing.T) {
 			}
 			if proxy == nil || proxy.String() != tt.wantProxy {
 				t.Errorf("proxy = %v, want %s", proxy, tt.wantProxy)
+			}
+		})
+	}
+}
+
+// TestSelfhostedTranscriptionUsesConnectionProxy pins the HTTP side of the
+// proxy chain. The self-hosted backend is the only caption backend that sends
+// an HTTP POST instead of opening a WebSocket, so it needs its own client: the
+// POST must leave through the assigned pool, and a pool this lane cannot use
+// (an edge relay, whose rewrite only the chat lane implements) must drop the
+// flush rather than post from the gateway's own address.
+func TestSelfhostedTranscriptionUsesConnectionProxy(t *testing.T) {
+	cases := []struct {
+		name     string
+		pool     *db.ProxyPoolData
+		wantPost int
+	}{
+		{
+			name:     "http pool carries the transcription POST",
+			pool:     &db.ProxyPoolData{Name: "sg-proxy", ProxyURL: "", Type: "http"},
+			wantPost: 1,
+		},
+		{
+			name: "edge relay pool refuses the flush",
+			pool: &db.ProxyPoolData{
+				Name: "relay", ProxyURL: "https://relay.example.vercel.app", Type: "vercel",
+			},
+			wantPost: 0,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+
+			// The proxy records what it was asked to forward; the direct
+			// upstream records whether anything reached it unproxied.
+			var proxied, direct int
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				proxied++
+				if r.URL.Host != "stt.upstream.test" {
+					t.Errorf("proxy received %q, want the absolute upstream URL", r.URL.String())
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"words":[]}`)
+			}))
+			t.Cleanup(proxy.Close)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				direct++
+				_, _ = io.WriteString(w, `{"words":[]}`)
+			}))
+			t.Cleanup(upstream.Close)
+
+			data := `{"apiKey":"sk-test","baseUrl":"http://stt.upstream.test/v1/audio/transcriptions"}`
+			if tt.pool != nil {
+				pd := *tt.pool
+				if pd.ProxyURL == "" {
+					pd.ProxyURL = proxy.URL
+				}
+				poolID := seedPool(t, repo, pd)
+				data = `{"apiKey":"sk-test","baseUrl":"http://stt.upstream.test/v1/audio/transcriptions","proxyPoolId":"` + poolID + `"}`
+			}
+			addConnection(t, repo, "conn-1", "selfhosted-stt", data)
+
+			h := NewHandler(repo, &chat.ChatHandler{Repo: repo, Client: &http.Client{}})
+			s := &session{h: h, provider: "selfhosted-stt", model: "whisper-1"}
+			s.ctx, s.cancel = context.WithCancel(context.Background())
+			t.Cleanup(s.cancel)
+			if !s.resolveConnection() {
+				t.Fatal("resolveConnection refused a credentialed connection")
+			}
+
+			s.postSelfhosted([]byte("pcm"), "multipart/form-data; boundary=x")
+
+			if proxied != tt.wantPost {
+				t.Errorf("proxied requests = %d, want %d", proxied, tt.wantPost)
+			}
+			if direct != 0 {
+				t.Errorf("direct upstream received %d requests: the flush must never bypass the proxy", direct)
+			}
+			if tt.wantPost == 0 && s.postErr == nil {
+				t.Error("expected a recorded refusal reason for the unusable pool")
 			}
 		})
 	}

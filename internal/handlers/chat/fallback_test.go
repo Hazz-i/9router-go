@@ -375,6 +375,49 @@ func TestHandleAccountFallback_503CapacityLocksCanonicalModel(t *testing.T) {
 	}
 }
 
+// TestExtractErrorText_CodeBuddyMsgField pins the envelope CodeBuddy actually
+// returns when channel verification fails: {"code":11128,"msg":"request
+// illegal"}. The phrase has to survive extraction, or the provider-scoped
+// backoff rule for codebuddy-intl can never match and the account keeps being
+// retried on a fixed 403 cooldown.
+func TestExtractErrorText_CodeBuddyMsgField(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "codebuddy code/msg envelope",
+			body: `{"code":11128,"msg":"request illegal"}`,
+			want: "request illegal",
+		},
+		{
+			name: "error.message still wins",
+			body: `{"error":{"message":"real message"},"msg":"ignored"}`,
+			want: "real message",
+		},
+		{
+			name: "top-level message still wins over msg",
+			body: `{"message":"top message","msg":"ignored"}`,
+			want: "top message",
+		},
+		{
+			name: "no message at all stays empty",
+			body: `{"code":11128}`,
+			want: "",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractErrorText([]byte(tt.body))
+			if got != tt.want {
+				t.Errorf("extractErrorText(%s) = %q, want %q", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractErrorText_CloudflareHTML(t *testing.T) {
 	htmlBody := []byte(`<!DOCTYPE html>
 <html class="no-js" lang="en-US">

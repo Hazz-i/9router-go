@@ -7,6 +7,7 @@ package caption
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -84,7 +85,12 @@ func (s *session) postSelfhosted(body []byte, contentType string) {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
-	resp, err := s.h.http.Do(req)
+	client, clientErr := s.postClient()
+	if clientErr != nil {
+		log.Error("caption", "self-hosted STT flush error", "error", clientErr)
+		return
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		if s.ctx.Err() == nil {
 			log.Error("caption", "self-hosted STT flush error", "error", err)
@@ -110,6 +116,38 @@ func (s *session) postSelfhosted(body []byte, contentType string) {
 	for _, w := range result.Words {
 		s.appendWord(Word{Word: w.Word, Start: w.Start, End: w.End, IsFinal: true})
 	}
+}
+
+// postClient resolves the connection's proxy-aware HTTP client once per
+// session. This is the one caption backend that sends HTTP rather than a
+// WebSocket, and a connection bound to a proxy must leave through it: posting
+// from the gateway's own address while the dashboard shows the connection as
+// proxied is exactly the leak the assignment prevents. An unresolvable pool is
+// therefore an error, never a fallback to the plain client.
+//
+// An edge-relay pool is refused too: a relay forwards by rewriting the request
+// onto x-relay-target / x-relay-path, which only the chat lane implements, so
+// this lane would otherwise dial the real base URL.
+func (s *session) postClient() (*http.Client, error) {
+	if s.post != nil || s.postErr != nil {
+		return s.post, s.postErr
+	}
+	if s.h.clientFor == nil || s.connData == nil {
+		return s.h.http, nil
+	}
+	if id := s.connData.ProxyPoolID; id != "" {
+		if pool, err := s.h.repo.GetProxyPool(id); err == nil && pool != nil && pool.IsEdgeRelay() {
+			s.postErr = fmt.Errorf("proxy pool %q is an edge relay and cannot carry the self-hosted transcription POST", id)
+			return nil, s.postErr
+		}
+	}
+	client, err := s.h.clientFor(s.connData)
+	if err != nil {
+		s.postErr = err
+		return nil, err
+	}
+	s.post = client
+	return s.post, nil
 }
 
 // selfhostedBaseURL prefers the connection's own baseUrl over the default.

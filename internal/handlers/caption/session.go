@@ -8,6 +8,7 @@ import (
 	"context"
 	json "encoding/json/v2"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,11 @@ type session struct {
 	// dial is the per-connection proxy dialer resolved in resolveConnection.
 	// nil keeps the handler's default dialer (direct, no proxy chain).
 	dial *websocket.Dialer
+	// post is the per-connection proxy-aware HTTP client for the self-hosted
+	// backend, resolved on first flush. postErr records why it was refused so
+	// every later flush logs the same reason instead of dialing direct.
+	post    *http.Client
+	postErr error
 
 	// word state is written by the upstream reader and read by the client
 	// reader (get_subtitles) and by cleanup (usage count).

@@ -1305,6 +1305,12 @@ func extractErrorText(body []byte) string {
 			} `json:"details"`
 		} `json:"error"`
 		Message string `json:"message"`
+		// CodeBuddy answers {"code":11128,"msg":"request illegal"} with no
+		// message field at all. Without this the text rules keyed on that
+		// phrase could never fire: the 403 fell to the status rule, the
+		// account-level backoff never escalated, and the stored lastError was
+		// {"status":403,"message":""}.
+		Msg string `json:"msg"`
 	}
 	if err := json.Unmarshal(body, &parsed); err == nil {
 		var parts []string
@@ -1312,6 +1318,8 @@ func extractErrorText(body []byte) string {
 			parts = append(parts, parsed.Error.Message)
 		} else if parsed.Message != "" {
 			parts = append(parts, parsed.Message)
+		} else if parsed.Msg != "" {
+			parts = append(parts, parsed.Msg)
 		}
 		if parsed.Error.Status != "" {
 			parts = append(parts, parsed.Error.Status)
