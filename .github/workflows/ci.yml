@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A manual run so a branch image can be republished when the push event did
+  # not produce one (a dropped event, or a fork whose push trigger is silent).
+  # The GHCR job below honours it; every other job is unchanged.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -496,7 +500,7 @@ jobs:
   # `pull_request` from a fork gets a read-only token, hence the head-repo guard.
   docker-publish:
     name: Publish Docker image (GHCR)
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
