@@ -638,6 +638,19 @@ func init() {
 		"gemini-4-argon":        geminiWebCaps,
 	}
 
+	// Kenari (kenari.id) is an image-only aggregator: every id in its catalogue
+	// accepts a photo as edit input and returns an image. Provider-scoped so
+	// the shared gpt-image-* ids keep the global pattern caps the other
+	// providers serving them rely on.
+	providerCapabilities["kenari"] = map[string]Capabilities{
+		"agnes-image-2-0-flash:free": {Vision: true, ImageOutput: true},
+		"agnes-image-2-1-flash:free": {Vision: true, ImageOutput: true},
+		"agnes-image-2-5-flash:free": {Vision: true, ImageOutput: true},
+		"gpt-image-2":                {Vision: true, ImageOutput: true},
+		"gpt-image-2-5-flare":        {Vision: true, ImageOutput: true},
+		"gpt-image-2-5-sunburst":     {Vision: true, ImageOutput: true},
+	}
+
 	providerCapabilities["opencode-go"] = map[string]Capabilities{
 		"glm-5.3-flash": {
 			Vision: true, VideoInput: true, PDF: true, Reasoning: true, Tools: true,

@@ -42,6 +42,9 @@ func MediaBodyLimitRules() []BodyLimitRule {
 		{Suffix: "/videos/edits", MaxBytes: MediaMaxBodySize},
 		{Suffix: "/videos/extensions", MaxBytes: MediaMaxBodySize},
 		{Suffix: "/audio/transcriptions", MaxBytes: MediaMaxBodySize},
+		// Image edits carry the attached photo; the handler itself enforces a
+		// tighter 20MB total, this ceiling just keeps the middleware out of the way.
+		{Suffix: "/images/edits", MaxBytes: MediaMaxBodySize},
 	}
 }
 

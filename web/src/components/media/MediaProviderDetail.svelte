@@ -393,6 +393,11 @@
   let isTestingExample = $state(false)
   let exampleResponse = $state<string | null>(null)
   let exampleLatency = $state<number | null>(null)
+  let imageFile = $state<File | null>(null)
+  let imagePreviewUrl = $state<string | null>(null)
+  let imageFileError = $state('')
+  let imageFileInput = $state<HTMLInputElement | null>(null)
+  let exampleImagePreview = $state<string | null>(null)
 
   const ttsVoices = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer']
 
@@ -426,12 +431,38 @@
   onMount(() => {
     const stored = getStoredAPIKey()
     if (stored) activeApiKey = stored
+    return () => {
+      if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl)
+    }
   })
+
+  function handleImageFileChange(event: Event) {
+    const input = event.currentTarget as HTMLInputElement
+    const file = input.files?.[0]
+    if (!file) return
+    input.value = ''
+    if (file.size > 20 * 1024 * 1024) {
+      imageFileError = 'Images must be 20 MB or smaller.'
+      return
+    }
+    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl)
+    imageFile = file
+    imagePreviewUrl = URL.createObjectURL(file)
+    imageFileError = ''
+  }
+
+  function removeImageFile() {
+    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl)
+    imageFile = null
+    imagePreviewUrl = null
+    imageFileError = ''
+    if (imageFileInput) imageFileInput.value = ''
+  }
 
   let exampleEndpoint = $derived.by(() => {
     const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20130'
     if (kind === 'video') return `${origin}/v1/videos/generations`
-    if (kind === 'image') return `${origin}/v1/images/generations`
+    if (kind === 'image') return `${origin}/v1/images/${imageFile ? 'edits' : 'generations'}`
     if (kind === 'tts') return `${origin}/v1/audio/speech`
     if (kind === 'stt') return `${origin}/v1/audio/transcriptions`
     if (kind === 'embedding') return `${origin}/v1/embeddings`
@@ -450,6 +481,7 @@
       return `curl -X POST ${origin}/v1/videos/generations \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${key}" \\\n  -d '{"model":"${qualifiedModel}","prompt":"${exampleInput || 'A serene lake at sunset'}"}'`
     }
     if (kind === 'image') {
+      if (imageFile) return `curl -X POST ${origin}/v1/images/edits -H "Authorization: Bearer ${key}" -F "model=${qualifiedModel}" -F "prompt=${exampleInput}" -F "image=@${imageFile.name}" -F "n=1" -F "size=auto" -F "quality=auto" -F "background=auto" -F "image_detail=high" -F "output_format=png"`
       return `curl -X POST ${origin}/v1/images/generations \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${key}" \\\n  -d '{"model":"${qualifiedModel}","prompt":"${exampleInput || 'A cute cat wearing a hat'}","n":1,"size":"auto","quality":"auto","background":"auto","image_detail":"high","output_format":"png"}'`
     }
     if (kind === 'embedding') {
@@ -510,6 +542,7 @@
   async function handleTestExample() {
     isTestingExample = true
     exampleResponse = null
+    exampleImagePreview = null
     const start = performance.now()
     try {
       const defaultModel = selectedModelId || mediaModels[0]?.id || ''
@@ -531,12 +564,26 @@
           body: JSON.stringify({ model: qualifiedModel, prompt: exampleInput })
         })
       } else if (kind === 'image') {
-        headers['Content-Type'] = 'application/json'
-        res = await fetch('/v1/images/generations', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ model: qualifiedModel, prompt: exampleInput, n: 1, size: 'auto', quality: 'auto', background: 'auto', image_detail: 'high', output_format: 'png' })
-        })
+        if (imageFile) {
+          const formData = new FormData()
+          formData.append('model', qualifiedModel)
+          formData.append('prompt', exampleInput)
+          formData.append('image', imageFile)
+          formData.append('n', '1')
+          formData.append('size', 'auto')
+          formData.append('quality', 'auto')
+          formData.append('background', 'auto')
+          formData.append('image_detail', 'high')
+          formData.append('output_format', 'png')
+          res = await fetch('/v1/images/edits', { method: 'POST', headers, body: formData })
+        } else {
+          headers['Content-Type'] = 'application/json'
+          res = await fetch('/v1/images/generations', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ model: qualifiedModel, prompt: exampleInput, n: 1, size: 'auto', quality: 'auto', background: 'auto', image_detail: 'high', output_format: 'png' })
+          })
+        }
       } else if (kind === 'tts') {
         headers['Content-Type'] = 'application/json'
         res = await fetch(`/v1/audio/speech?response_format=${ttsResponseFormat || 'json'}`, {
@@ -611,6 +658,11 @@
       if (cType.includes('application/json')) {
         const json = await res.json()
         exampleResponse = JSON.stringify(json, null, 2)
+        if (kind === 'image') {
+          const firstImage = json?.data?.[0]
+          if (typeof firstImage?.url === 'string') exampleImagePreview = firstImage.url
+          else if (typeof firstImage?.b64_json === 'string') exampleImagePreview = `data:image/png;base64,${firstImage.b64_json}`
+        }
       } else if (cType.includes('audio/') || cType.includes('octet-stream')) {
         const blob = await res.blob()
         exampleResponse = `// Received audio binary: ${blob.type || 'audio/mp3'} (${blob.size} bytes)`
@@ -1033,6 +1085,31 @@
             {/if}
           </div>
         </div>
+        {#if kind === 'image'}
+          <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-3">
+            <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0 sm:pt-2">Image</span>
+            <div class="w-full min-w-0 flex-1">
+              <input bind:this={imageFileInput} type="file" accept="image/*" class="hidden" onchange={handleImageFileChange} />
+              {#if imageFile && imagePreviewUrl}
+                <div class="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-sidebar px-2.5 py-2">
+                  <img src={imagePreviewUrl} alt="Selected file preview" class="size-12 shrink-0 rounded-md object-cover" />
+                  <span class="min-w-0 flex-1 truncate text-xs text-text-main" title={imageFile.name}>{imageFile.name}</span>
+                  <button type="button" onclick={() => imageFileInput?.click()} class="shrink-0 rounded px-2 py-1 text-xs text-text-muted hover:bg-surface-2 hover:text-text-main cursor-pointer">Replace</button>
+                  <button type="button" onclick={removeImageFile} aria-label="Remove attached image" class="shrink-0 rounded p-1 text-text-muted hover:bg-surface-2 hover:text-text-main cursor-pointer">
+                    <span class="material-symbols-outlined text-[16px]">close</span>
+                  </button>
+                </div>
+              {:else}
+                <button type="button" onclick={() => imageFileInput?.click()} class="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-text-main hover:bg-surface-2 cursor-pointer">
+                  <span class="material-symbols-outlined text-[16px]">attach_file</span>
+                  Attach image
+                </button>
+              {/if}
+              <p class="mt-1 text-xs text-text-muted">Images up to 20 MB (the gateway rejects larger requests).</p>
+              {#if imageFileError}<p class="mt-1 text-xs text-red-500">{imageFileError}</p>{/if}
+            </div>
+          </div>
+        {/if}
       {:else if kind === 'tts'}
         <div class="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
           <span class="w-full text-xs font-medium text-text-muted sm:w-20 sm:shrink-0">Voice</span>
@@ -1272,6 +1349,9 @@
             Response {exampleLatency ? `(${exampleLatency}ms)` : ''}
           </span>
         </div>
+        {#if kind === 'image' && exampleImagePreview}
+          <img src={exampleImagePreview} alt="Generated result" class="mb-2 max-h-80 max-w-full rounded-lg border border-border object-contain" />
+        {/if}
         <pre class="bg-sidebar rounded-lg px-3 py-2.5 text-xs font-mono text-text-main overflow-x-auto whitespace-pre-wrap break-all opacity-70">{exampleResponse || defaultResponse}</pre>
       </div>
     </div>
