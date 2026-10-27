@@ -1,0 +1,6 @@
+### fix(realtime): stop a pre-ack session.update from echoing before the setup frames
+
+- The Gemini adapter echoes `session.updated` as soon as it has sent the setup frame upstream, not when the upstream acknowledges it. A client that sends `session.update` in that window (exactly what the flow looks like right after `session.created`) had its echo written between the setup's `session.created` and its own `session.updated`, so the setup's stale default voice (Puck) landed last and reverted the voice the operator had just chosen.
+- The adapter now records `setupAcked` when `setupComplete` arrives, still stores an earlier `session.update`, and does not echo it: the setup echo is the one that carries the state. Its `session.updated` is also re-read under the mutex after `session.created` is written, so an update that lands mid-echo is reflected instead of overwritten.
+- Caught by the race-detector CI job on `TestGeminiWire_SessionUpdateAfterSetupEchoesOnly` (`session.updated voice = Puck, want the update's voice Kore`), which is the same interleave with the scheduler's slower clock.
+- Pinned by `TestGeminiWire_UpdateBeforeSetupAckIsNotEchoedEarly`: with the upstream ack deliberately held, `session.created` must be the first frame the client sees and the setup echo must carry the update's voice. Fails on the previous code, passes now.

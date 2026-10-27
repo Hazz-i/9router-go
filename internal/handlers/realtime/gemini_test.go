@@ -350,6 +350,42 @@ func TestGeminiWire_UpstreamErrorFrameMapsToClientError(t *testing.T) {
 	}
 }
 
+// TestGeminiWire_UpdateBeforeSetupAckIsNotEchoedEarly pins the ordering the
+// two setup frames rely on: between the setup frame going upstream and the
+// upstream's setupComplete echo, a session.update is stored but NOT echoed.
+// Echoing there wrote the update's session.updated between session.created and
+// the setup's own session.updated, so the stale default voice landed last and
+// reverted the client's choice (the -race race-detector job caught it).
+func TestGeminiWire_UpdateBeforeSetupAckIsNotEchoedEarly(t *testing.T) {
+	release := make(chan struct{})
+	drive := func(conn *websocket.Conn) {
+		<-release
+		writeJSON(t, conn, map[string]any{"setupComplete": map[string]any{}})
+	}
+	fake, client := startGeminiSession(t, 1, drive)
+	fake.open()
+	waitFor(t, 3*time.Second, "setup frame upstream", func() bool { return fake.frameCount() >= 1 })
+
+	writeJSON(t, client, map[string]any{
+		"type":    "session.update",
+		"session": map[string]any{"voice": "Kore"},
+	})
+	// Let the client read loop handle it while the ack is still outstanding.
+	time.Sleep(150 * time.Millisecond)
+	close(release)
+
+	// Strict order: the ack's session.created must be the first frame the
+	// client sees. An early echo would have arrived before it.
+	first := readJSON(t, client, 3*time.Second)
+	if got := eventType(first); got != "session.created" {
+		t.Fatalf("first frame after the update = %q, want session.created", got)
+	}
+	ev := waitForEvent(t, client, "session.updated", 3*time.Second)
+	if voice := ev["session"].(map[string]any)["voice"]; voice != "Kore" {
+		t.Errorf("setup echo voice = %v, want the update's voice Kore", voice)
+	}
+}
+
 // TestGeminiWire_SessionUpdateAfterSetupEchoesOnly: once the setup frame is
 // out, a session.update no longer re-sends anything upstream — it only echoes
 // session.updated (§2.5).

@@ -56,6 +56,12 @@ type geminiAdapter struct {
 	// the pre-connect nil must be observable without a data race.
 	up        atomic.Pointer[upstreamSocket]
 	setupSent atomic.Bool
+	// setupAcked is set once the upstream acknowledged the setup frame and its
+	// session.created/session.updated echo is on the wire. A session.update that
+	// lands before that is stored but not echoed: the setup echo is the one that
+	// carries the state, and echoing earlier let the update's voice be written
+	// between the two setup frames and then overwritten by the stale default.
+	setupAcked atomic.Bool
 
 	// mu guards the mutable setup state: voice/instructions are updated from
 	// the client read loop while the setup frame may be sent from the
@@ -227,8 +233,14 @@ func (g *geminiAdapter) handleUpstreamFrame(msg map[string]any) {
 	if _, ok := msg["setupComplete"]; ok {
 		g.mu.Lock()
 		voice, model := g.activeVoice, g.c.model
+		g.setupAcked.Store(true)
 		g.mu.Unlock()
 		sendSessionCreated(g.c, g.sessionID, model, voice)
+		// Re-read: a session.update may have landed while the created frame was
+		// being written, and this echo must not resurrect the voice it replaced.
+		g.mu.Lock()
+		voice = g.activeVoice
+		g.mu.Unlock()
 		sendSessionUpdated(g.c, g.sessionID, model, voice)
 		return
 	}
@@ -327,6 +339,12 @@ func (g *geminiAdapter) handleSessionUpdate(event map[string]any) {
 
 	if !g.setupSent.Load() {
 		g.sendSetup()
+		return
+	}
+	// Until setupComplete is echoed the setup frames carry the session state -
+	// they read activeVoice after this stores it - so echoing here would only
+	// interleave with them and risk the stale voice landing last.
+	if !g.setupAcked.Load() {
 		return
 	}
 	sendSessionUpdated(g.c, g.sessionID, g.c.model, voice)
