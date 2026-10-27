@@ -1,6 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#0F766E"/>
-  <rect x="13" y="16" width="38" height="32" rx="4" fill="none" stroke="#fff" stroke-width="3"/>
-  <circle cx="25" cy="27" r="3" fill="#fff"/>
-  <path d="m16 43 11-10 7 6 5-4 9 8" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <!-- favicon = the k-mark: lowercase "k" (ink) + brick square accent (persegi),
+       baseline-aligned, same font as the kenari lockup. -->
+  <rect width="40" height="40" rx="9" fill="#FBF6EE"/>
+  <text x="9.5" y="30" font-family="Archivo, Helvetica, Arial, sans-serif" font-weight="800" font-size="27" letter-spacing="-1" fill="#241F1B">k</text>
+  <rect x="24.7" y="25.3" width="4.6" height="4.6" fill="#B5362A"/>
 </svg>

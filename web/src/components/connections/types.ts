@@ -58,6 +58,13 @@ const ICON_ALIASES: Record<string, string> = {
   'zai-search': 'glm',
 }
 
+// Providers whose artwork ships as SVG only. Their tile asked for
+// `/providers/<id>.png`, answered 404 and fell back to the initials badge, so
+// the shipped mark was never seen. codewhale/smelt ship an SVG too but have no
+// catalog entry of their own, so they never reach this path. The <img> error
+// fallback still covers a provider that loses its file.
+const SVG_ARTWORK = new Set(['kenari'])
+
 export function getIconPath(id?: string | null, apiType?: string): string {
   if (!id) return '/providers/oai-cc.png'
   const clean = id.trim()
@@ -72,7 +79,10 @@ export function getIconPath(id?: string | null, apiType?: string): string {
   const fileId = ICON_ALIASES[clean]
     ?? (PROVIDER_CATALOG_MAP.has(clean) ? clean : PROVIDER_CATALOG.find((p) => p.alias === clean)?.id)
   if (fileId) {
-    return `/providers/${fileId}.png`
+    // Artwork is a PNG per provider, except the few that ship an SVG only.
+    // Serving them the PNG path answered 404 and every tile silently fell back
+    // to the initials badge, which is why those providers looked unbranded.
+    return `/providers/${fileId}.${SVG_ARTWORK.has(fileId) ? 'svg' : 'png'}`
   }
   return apiType === 'responses' ? '/providers/oai-r.png' : '/providers/oai-cc.png'
 }

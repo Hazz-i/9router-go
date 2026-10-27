@@ -1576,10 +1576,10 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     "name": "Kenari",
     "category": "apikey",
     "alias": "kenari",
-    "color": "#0F766E",
+    "color": "#B5362A",
     "icon": "image",
     "website": "https://kenari.id",
-    "notice": {"text":"Kenari API key required for image generation."},
+    "notice": {"text":"Kenari API key required for image generation. One key reaches its OpenAI-compatible image models.","apiKeyUrl":"https://kenari.id/dashboard"},
     "authType": "apikey",
     "noAuth": false,
     "serviceKinds": [

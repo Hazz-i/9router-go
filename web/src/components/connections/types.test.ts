@@ -98,4 +98,14 @@ describe('getIconPath', () => {
     expect(getIconPath('my-reverse-proxy')).toBe('/providers/oai-cc.png')
     expect(getIconPath(undefined)).toBe('/providers/oai-cc.png')
   })
+
+  // A few providers ship an SVG only; asking for their .png answered 404 and
+  // the tile fell back to the initials badge, so the mark that exists was never
+  // shown. Everything else keeps the PNG path.
+  test('asks for the SVG artwork where that is what the provider ships', () => {
+    expect(getIconPath('kenari')).toBe('/providers/kenari.svg')
+    // PNG-only providers are unaffected.
+    expect(getIconPath('elevenlabs')).toBe('/providers/elevenlabs.png')
+    expect(getIconPath('bfl')).toBe('/providers/black-forest-labs.png')
+  })
 })
