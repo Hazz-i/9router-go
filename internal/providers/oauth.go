@@ -91,7 +91,7 @@ var KnownOAuthConfigs = map[string]OAuthClientConfig{
 	"codebuddy-intl": {
 		ClientID:     envOr("CODEBUDDY_INTL_OAUTH_CLIENT_ID", ""),
 		ClientSecret: envOr("CODEBUDDY_INTL_OAUTH_CLIENT_SECRET", ""),
-		TokenURL:     "https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+		TokenURL:     "https://www.codebuddy.ai/v2/plugin/auth/token/refresh",
 	},
 	"cline": {
 		ClientID:     envOr("CLINE_OAUTH_CLIENT_ID", ""),

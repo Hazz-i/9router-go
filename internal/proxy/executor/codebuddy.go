@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"crypto/sha1"
+	"encoding/base64"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -267,9 +268,14 @@ func transformCodebuddyBody(body []byte) ([]byte, error) {
 	return json.Marshal(reqMap)
 }
 
+// codebuddyHeaders reproduces the exact header set the official CLI sends on
+// /v2/chat/completions, captured via a local capture server driven by
+// CODEBUDDY_BASE_URL. The channel check fails (and, per decolua/9router#5001,
+// then restricts the account outright) unless the request carries the full
+// family: trace cluster (traceparent/b3/x-b3-*/x-trace-id), baggage,
+// x-root-request-id, x-agent-type, x-agent-runtime, and x-user-id from the JWT.
 func codebuddyHeaders(req *Request, cfg *providers.ProviderConfig, body []byte) map[string]string {
 	reqID := strings.ReplaceAll(uuid.NewString(), "-", "")
-	convReqID := strings.ReplaceAll(uuid.NewString(), "-", "")
 
 	sessionKey := req.SessionID
 	if sessionKey == "" && req.ConnData != nil {
@@ -286,6 +292,17 @@ func codebuddyHeaders(req *Request, cfg *providers.ProviderConfig, body []byte) 
 	} else {
 		convID = uuid.NewString()
 	}
+	// Message/request id is fresh per turn; the conversation id is stable per
+	// session. x-root-request-id mirrors the conversation request id the same
+	// way the official CLI does (baggage ties both ids to x-conversation-id).
+	convReqID := strings.ReplaceAll(uuid.NewString(), "-", "")
+
+	// Trace cluster: fresh per request (the CLI opens an OTel span per call).
+	traceID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	spanHex := strings.ReplaceAll(uuid.NewString(), "-", "")
+	parentHex := strings.ReplaceAll(uuid.NewString(), "-", "")
+	spanID := spanHex[:16]
+	parentSpanID := parentHex[:16]
 
 	domain := "www.codebuddy.ai"
 	if req.ConnData != nil {
@@ -297,33 +314,69 @@ func codebuddyHeaders(req *Request, cfg *providers.ProviderConfig, body []byte) 
 		domain = "copilot.tencent.com"
 	}
 
-	return map[string]string{
-		"Content-Type":                "application/json; charset=utf-8",
-		"User-Agent":                  "CLI/2.108.1 CodeBuddy/2.108.1",
+	headers := map[string]string{
+		"Content-Type":                "application/json",
+		"Accept":                      "application/json",
+		"User-Agent":                  "CLI/" + providers.CodeBuddyClientVersion + " CodeBuddy/" + providers.CodeBuddyClientVersion,
 		"X-Product":                   "SaaS",
-		"X-App":                       "cli",
 		"X-IDE-Type":                  "CLI",
 		"X-IDE-Name":                  "CLI",
-		"X-IDE-Version":               "2.108.1",
+		"X-IDE-Version":               providers.CodeBuddyClientVersion,
 		"X-Private-Data":              "false",
 		"X-Requested-With":            "XMLHttpRequest",
 		"X-CodeBuddy-Request":         "1",
 		"X-Domain":                    domain,
 		"X-Stainless-Runtime":         "node",
-		"X-Stainless-Runtime-Version": "v24.11.1",
+		"X-Stainless-Runtime-Version": "v24.19.0",
 		"X-Stainless-Lang":            "js",
 		"X-Stainless-Arch":            "x64",
-		"X-Stainless-Os":              "Windows",
+		"X-Stainless-Os":              "Linux",
 		"X-Stainless-Package-Version": "6.25.0",
-		"X-Stainless-Helper-Method":   "stream",
 		"X-Stainless-Retry-Count":     "0",
 		"X-Request-ID":                reqID,
 		"X-Conversation-ID":           convID,
 		"X-Conversation-Request-ID":   convReqID,
 		"X-Conversation-Message-ID":   reqID,
+		"X-Root-Request-ID":           convReqID,
 		"X-Agent-Intent":              "craft",
+		"X-Agent-Runtime":             "other",
+		"X-Agent-Type":                "main",
 		"X-Agent-Purpose":             "conversation",
+		"Baggage":                     "codebuddy.session_id=" + convID + ",codebuddy.conversation_request_id=" + convReqID,
+		"traceparent":                 "00-" + traceID + "-" + spanID + "-01",
+		"b3":                          traceID + "-" + spanID + "-1-" + parentSpanID,
+		"X-B3-TraceId":                traceID,
+		"X-B3-ParentSpanId":           parentSpanID,
+		"X-B3-SpanId":                 spanID,
+		"X-B3-Sampled":                "1",
+		"X-Trace-Id":                  traceID,
 	}
+	// X-User-Id carries the JWT subject; the official CLI stamps it from the
+	// login session. Omit when the credential is not a JWT-shaped token.
+	if sub := jwtSubject(req.APIKey); sub != "" {
+		headers["X-User-Id"] = sub
+	}
+	return headers
+}
+
+// jwtSubject decodes a JWT's payload and returns its "sub" claim. Any parse
+// or shape problem yields "".
+func jwtSubject(token string) string {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.Sub == "" {
+		return ""
+	}
+	return claims.Sub
 }
 
 func codebuddyConversationHeaders(req *Request, body []byte) map[string]string {

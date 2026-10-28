@@ -1025,7 +1025,7 @@ func fetchQoderUsageAt(ctx context.Context, accessToken, usageURL string) usageR
 // ---------- codebuddy-intl: POST billing meter ----------
 
 var codebuddyIntlHeaders = map[string]string{
-	"User-Agent":          "IDE/2.108.1 CodeBuddy/2.108.1",
+	"User-Agent":          "IDE/" + providers.CodeBuddyClientVersion + " CodeBuddy/" + providers.CodeBuddyClientVersion,
 	"X-Product":           "SaaS",
 	"X-IDE-Type":          "IDE",
 	"X-IDE-Name":          "IDE",

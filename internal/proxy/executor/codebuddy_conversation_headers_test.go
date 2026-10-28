@@ -96,13 +96,10 @@ func TestCodebuddyHeaders_ChannelVerification(t *testing.T) {
 	cnHeaders := codebuddyHeaders(cnReq, cnCfg, cnReq.Body)
 	intlHeaders := codebuddyHeaders(intlReq, intlCfg, intlReq.Body)
 
-	if cnHeaders["User-Agent"] != "CLI/2.108.1 CodeBuddy/2.108.1" {
+	if cnHeaders["User-Agent"] != "CLI/"+providers.CodeBuddyClientVersion+" CodeBuddy/"+providers.CodeBuddyClientVersion {
 		t.Errorf("cn User-Agent = %q", cnHeaders["User-Agent"])
 	}
-	if cnHeaders["X-App"] != "cli" {
-		t.Errorf("cn X-App = %q", cnHeaders["X-App"])
-	}
-	if cnHeaders["X-IDE-Type"] != "CLI" || cnHeaders["X-IDE-Name"] != "CLI" || cnHeaders["X-IDE-Version"] != "2.108.1" {
+	if cnHeaders["X-IDE-Type"] != "CLI" || cnHeaders["X-IDE-Name"] != "CLI" || cnHeaders["X-IDE-Version"] != providers.CodeBuddyClientVersion {
 		t.Errorf("cn IDE headers mismatch: type=%q name=%q ver=%q", cnHeaders["X-IDE-Type"], cnHeaders["X-IDE-Name"], cnHeaders["X-IDE-Version"])
 	}
 	if cnHeaders["X-Domain"] != "copilot.tencent.com" {
@@ -121,7 +118,7 @@ func TestCodebuddyHeaders_ChannelVerification(t *testing.T) {
 		t.Errorf("cn Agent headers mismatch: intent=%q purpose=%q", cnHeaders["X-Agent-Intent"], cnHeaders["X-Agent-Purpose"])
 	}
 
-	if intlHeaders["User-Agent"] != "CLI/2.108.1 CodeBuddy/2.108.1" {
+	if intlHeaders["User-Agent"] != "CLI/"+providers.CodeBuddyClientVersion+" CodeBuddy/"+providers.CodeBuddyClientVersion {
 		t.Errorf("intl User-Agent = %q", intlHeaders["User-Agent"])
 	}
 	if intlHeaders["X-Domain"] != "www.codebuddy.ai" {

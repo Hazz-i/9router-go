@@ -375,9 +375,9 @@ func kimiStart() (map[string]any, error) {
 
 func codebuddyVariant(provider string) (base, ua, domain, platform string) {
 	if provider == "codebuddy-intl" {
-		return "https://www.codebuddy.ai", "IDE/2.63.2 CodeBuddy/2.63.2", "www.codebuddy.ai", "ide"
+		return "https://www.codebuddy.ai", "IDE/" + providers.CodeBuddyClientVersion + " CodeBuddy/" + providers.CodeBuddyClientVersion, "www.codebuddy.ai", "ide"
 	}
-	return "https://copilot.tencent.com", "CLI/2.63.2 CodeBuddy/2.63.2", "copilot.tencent.com", "CLI"
+	return "https://copilot.tencent.com", "CLI/" + providers.CodeBuddyClientVersion + " CodeBuddy/" + providers.CodeBuddyClientVersion, "copilot.tencent.com", "CLI"
 }
 
 func codebuddyStart(provider string) (map[string]any, error) {
@@ -844,9 +844,9 @@ func kimiPoll(session map[string]any, code string) (deviceTokens, error) {
 
 func codebuddyPoll(provider, state string) (deviceTokens, error) {
 	var t deviceTokens
-	base, ua, domain := "https://copilot.tencent.com", "CLI/2.63.2 CodeBuddy/2.63.2", "copilot.tencent.com"
+	base, ua, domain := "https://copilot.tencent.com", "CLI/"+providers.CodeBuddyClientVersion+" CodeBuddy/"+providers.CodeBuddyClientVersion, "copilot.tencent.com"
 	if provider == "codebuddy-intl" {
-		base, ua, domain = "https://www.codebuddy.ai", "IDE/2.63.2 CodeBuddy/2.63.2", "www.codebuddy.ai"
+		base, ua, domain = "https://www.codebuddy.ai", "IDE/"+providers.CodeBuddyClientVersion+" CodeBuddy/"+providers.CodeBuddyClientVersion, "www.codebuddy.ai"
 	}
 	headers := map[string]string{
 		"Accept": "application/json", "User-Agent": ua, "X-Requested-With": "XMLHttpRequest",
@@ -878,6 +878,12 @@ func codebuddyPoll(provider, state string) (deviceTokens, error) {
 	if code == 0 && strVal(inner, "accessToken") != "" {
 		t.access = strVal(inner, "accessToken")
 		t.refresh = strVal(inner, "refreshToken")
+		// The endpoint reports expiresIn in seconds (~31533865 ≈ 1 year).
+		// Without this the connection stored expiresAt=null and the runtime
+		// treated the token as permanently expired ("no OAuth refresher").
+		if v, ok := inner["expiresIn"].(float64); ok && v > 0 {
+			t.expiresIn = int(v)
+		}
 		return t, nil
 	}
 	if code == 11217 {

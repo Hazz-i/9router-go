@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+// CodeBuddyClientVersion mirrors the official codebuddy-code CLI version the
+// channel verification compares against ("failed channel verification" code
+// 11128 / account restriction code 11140). Captured from
+// @tencent-ai/codebuddy-code 2.177.1.
+const CodeBuddyClientVersion = "2.177.1"
+
 // ProviderConfig describes how to reach an upstream provider.
 type ProviderConfig struct {
 	BaseURL       string
@@ -661,7 +667,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		StaticHeaders: map[string]string{
-			"User-Agent":          "CLI/2.108.1 CodeBuddy/2.108.1",
+			"User-Agent":          "CLI/" + CodeBuddyClientVersion + " CodeBuddy/" + CodeBuddyClientVersion,
 			"X-Product":           "SaaS",
 			"X-IDE-Type":          "CLI",
 			"X-IDE-Name":          "CLI",
@@ -674,7 +680,7 @@ var KnownProviders = map[string]ProviderConfig{
 		AuthHeader: "Authorization",
 		AuthScheme: "bearer",
 		StaticHeaders: map[string]string{
-			"User-Agent":          "CLI/2.108.1 CodeBuddy/2.108.1",
+			"User-Agent":          "CLI/" + CodeBuddyClientVersion + " CodeBuddy/" + CodeBuddyClientVersion,
 			"X-Product":           "SaaS",
 			"X-IDE-Type":          "CLI",
 			"X-IDE-Name":          "CLI",
