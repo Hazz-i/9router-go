@@ -65,7 +65,7 @@ func refreshCodebuddy(ctx context.Context, p *Params) (*TokenResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("codebuddy refresh: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("codebuddy refresh: read response: %w", err)
