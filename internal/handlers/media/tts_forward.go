@@ -22,13 +22,28 @@ import (
 func (h *MediaHandler) forwardTTSRequest(w http.ResponseWriter, r *http.Request, body []byte) {
 	var req struct {
 		Model          string `json:"model"`
+		ModelID        string `json:"model_id"`
 		Input          string `json:"input"`
+		Text           string `json:"text"`
 		Voice          string `json:"voice"`
+		VoiceID        string `json:"voice_id"`
 		ResponseFormat string `json:"response_format"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return
+	}
+	// The vendor's own spelling (`text` / `voice_id` / `model_id`) is accepted
+	// alongside the OpenAI one, so a caller written against api.elevenlabs.io
+	// works unchanged.
+	if strings.TrimSpace(req.Input) == "" {
+		req.Input = strings.TrimSpace(req.Text)
+	}
+	if strings.TrimSpace(req.Voice) == "" {
+		req.Voice = strings.TrimSpace(req.VoiceID)
+	}
+	if strings.TrimSpace(req.Model) == "" && strings.TrimSpace(req.ModelID) != "" {
+		req.Model = "el/" + strings.TrimPrefix(strings.TrimSpace(req.ModelID), "el/")
 	}
 	if strings.TrimSpace(req.Input) == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "Missing required field: input")
@@ -94,7 +109,14 @@ func (h *MediaHandler) forwardTTSRequest(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	// 4. Default OpenAI-compatible TTS
+	// 4. elevenlabs: the vendor takes the voice id as a path segment and its own
+	// body field names, so the OpenAI-compatible funnel below cannot serve it.
+	if modelInfo.Provider == "elevenlabs" || modelInfo.Provider == "el" {
+		h.forwardElevenLabsTTS(w, r, body, modelInfo)
+		return
+	}
+
+	// 5. Default OpenAI-compatible TTS
 	h.forwardMediaRequest(w, r, body, "tts-1", "/v1/audio/speech")
 }
 
