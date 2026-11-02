@@ -398,15 +398,20 @@ var ProviderModelKinds = map[string]map[string]string{
 		"nova-3":        "stt",
 		"whisper-large": "stt",
 	},
-	// Only the STT ids appear here: this map covers the non-chat kinds, and the
-	// TTS ids are resolved through their own catalogue key upstream.
+	// Both service kinds live in one catalogue upstream, but only the STT ids
+	// were listed here. Without the TTS ids the LLM list fell through to the id
+	// heuristic and published el/eleven_multilingual_v2 as a chat model.
 	"elevenlabs": {
-		"scribe_v1": "stt",
-		"scribe_v2": "stt",
+		"eleven_multilingual_v2": "tts",
+		"eleven_turbo_v2_5":      "tts",
+		"scribe_v1":              "stt",
+		"scribe_v2":              "stt",
 	},
 	"el": {
-		"scribe_v1": "stt",
-		"scribe_v2": "stt",
+		"eleven_multilingual_v2": "tts",
+		"eleven_turbo_v2_5":      "tts",
+		"scribe_v1":              "stt",
+		"scribe_v2":              "stt",
 	},
 	"fal": {
 		"fal-ai/flux-pro/v1.1":              "image",
